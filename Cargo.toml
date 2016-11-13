@@ -1,0 +1,10 @@
+[package]
+name = "rrmq"
+version = "0.1.0"
+authors = ["Palmer Cox <palmer@fiscalnote.com>"]
+
+[dependencies]
+tokio-core = "0.1"
+futures = "^0.1.1"
+nom = "^1.2.4"
+# tokio-dns = {git = "https://github.com/sbstp/tokio-dns"}
