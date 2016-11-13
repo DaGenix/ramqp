@@ -9,6 +9,7 @@ use std::iter::repeat;
 use std::str;
 
 use futures::stream::Stream;
+use futures::stream;
 use futures::Future;
 
 use tokio_core::reactor::Core;
@@ -16,6 +17,7 @@ use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::io::read_exact;
 use tokio_core::io::write_all;
 use tokio_core::io;
+use tokio_core::io::IoFuture;
 
 use nom::{be_u8, be_i8, be_u16, be_i16, be_u32, be_i32, be_u64, be_i64, be_f32, be_f64};
 
@@ -223,14 +225,14 @@ fn main() {
     let handle = core.handle();
     let address = "127.0.0.1:5672".parse().unwrap();
 
-    fn read_frame(tcp_stream: TcpStream) -> tokio_core::io::IoFuture<(TcpStream, Frame)> {
+    fn read_frame(tcp_stream: TcpStream) -> IoFuture<(Frame, TcpStream)> {
         read_exact(tcp_stream, [0u8; 7]).and_then(|(tcp_stream, data)| {
             if let nom::IResult::Done(_, frame_header) = parse_frame_header(&data) {
                 // TODO - prevent overflow?
                 let data: Vec<u8> = repeat(0).take((frame_header.size + 1) as usize).collect();
                 read_exact(tcp_stream, data).and_then(|(tcp_stream, data)| {
                     match parse_frame(frame_header, &data) {
-                        nom::IResult::Done(_, frame) => Ok((tcp_stream, frame)),
+                        nom::IResult::Done(_, frame) => Ok((frame, tcp_stream)),
                         nom::IResult::Incomplete(_) => panic!("Incomplete"),
                         nom::IResult::Error(err) => {
                             println!("ERROR: {:?}", err);
@@ -245,11 +247,22 @@ fn main() {
     }
 
     let handle_client = TcpStream::connect(&address, &handle).and_then(|tcp_stream| {
-        write_all(tcp_stream, b"AMQP\0\0\x09\x01").and_then(|(tcp_stream, unused)| {
-            read_frame(tcp_stream)
-        }).and_then(|(tcp_stream, frame)| {
-            println!("Frame: {:?}", &frame);
-            Ok(())
+        write_all(tcp_stream, b"AMQP\0\0\x09\x01").and_then(|(tcp_stream, _)| {
+            futures::stream::unfold(tcp_stream, |tcp_stream| {
+                Some(read_frame(tcp_stream))
+            }).for_each(|frame| {
+                match frame {
+                    Frame::Method(method) => {
+                        match method {
+                            Method::MethodConnectionStart{ref mechanisms, ..} => {
+                                println!("MECHANISMS: {}", str::from_utf8(mechanisms).unwrap());
+                            }
+                        }
+                    },
+                    _ => panic!("Unsupported frame!")
+                }
+                Ok(())
+            })
         })
     });
 

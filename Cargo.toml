@@ -4,7 +4,9 @@ version = "0.1.0"
 authors = ["Palmer Cox <palmer@fiscalnote.com>"]
 
 [dependencies]
-tokio-core = "0.1"
-futures = "^0.1.1"
+# tokio-core = "0.1"
+tokio-core = {git = "https://github.com/tokio-rs/tokio-core.git"}
+# futures = "^0.1.1"
+futures = {git = "https://github.com/alexcrichton/futures-rs.git"}
 nom = "^1.2.4"
 # tokio-dns = {git = "https://github.com/sbstp/tokio-dns"}
