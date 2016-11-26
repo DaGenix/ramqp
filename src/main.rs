@@ -181,6 +181,16 @@ fn main() {
     */
 
     let handle_client = TcpStream::connect(&address, &handle).and_then(|tcp_stream| {
+        let framed = tcp_stream.framed(RmqCodec);
+        framed.send(Frame::RequiredProtocol(0, 9, 1)).and_then(|framed| {
+            framed.for_each(|frame| {
+                println!("FRAME: {:?}", &frame);
+                Ok(())
+            })
+        });
+
+
+        /*
         write_all(tcp_stream, b"AMQP\0\0\x09\x01").and_then(|(tcp_stream, _)| {
             println!("Sent data");
             /*
@@ -190,11 +200,8 @@ fn main() {
             }).map_err(|err| println!("ERR: {:?}", &err))
             */
             let (sink, stream) = tcp_stream.framed(RmqCodec).split();
-            stream.for_each(|frame| {
-                println!("FRAME: {:?}", &frame);
-                Ok(())
-            })
         })
+    */
     });
 
         //.map(|x| {
