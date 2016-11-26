@@ -32,28 +32,6 @@ use protocol::{
     write_frame,
 };
 
-
-
-/*
-enum SendCommand {
-    Frame {
-        frame_header: FrameHeader,
-        frame: Frame,
-    },
-    Shutdown,
-}
-
-struct RmqClient {
-    is_open: bool,
-    send_channel: futures::stream::Sender<SendCommand, std::io::Error>,
-
-}
-
-struct RmqChannel {
-
-}
-*/
-
 struct RmqCodec;
 
 impl Codec for RmqCodec {
@@ -192,13 +170,25 @@ fn main() {
     let handle_client = TcpStream::connect(&address, &handle).and_then(|tcp_stream| {
         let framed = tcp_stream.framed(RmqCodec);
         framed
-
             // Send the AMPQ version that we support - 0.9.1
             .send(Frame::RequiredProtocol(0, 9, 1)).and_then(|x| x.into_future().map_err(|(x, y)| x))
 
             // Get back a ConnectionStart frame. Verify the frame and then send out
             // a ConnectionStartOk frame with a username and password.
             .and_then(|(frame, framed)| {
+                match frame {
+                    Some(Frame::Method(_, Method::ConnectionStart{..})) => {
+                        Ok(framed)
+                    },
+                    Some(Frame::RequiredProtocol(major, minor, revision)) => {
+                        Err(io::Error::new(io::ErrorKind::Other, "Incompatible protocol version"))
+                    },
+                    _ => {
+                        Err(io::Error::new(io::ErrorKind::Other, "Unexpected Response"))
+                    }
+                }
+            })
+            .and_then(|framed| {
                 framed.send(Frame::Method(0, Method::ConnectionStartOk{
                     client_properties: HashMap::new(),
                     mechanism: From::from("PLAIN"),
@@ -209,7 +199,10 @@ fn main() {
 
             //
             .and_then(|(frame, framed)| {
-                Ok(())
+                match frame {
+                    Some(_) => Ok(()),
+                    None => Err(io::Error::new(io::ErrorKind::Other, "Password Authentication Failed"))
+                }
             })
 
 
