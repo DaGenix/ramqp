@@ -175,6 +175,7 @@ named!(parse_table<&[u8], HashMap<String, TableFieldValue> >,
 );
 
 pub fn parse_frame(input: &[u8]) -> nom::IResult<&[u8], Frame> {
+    #[derive(Debug)]
     enum Header {
         FrameHeader(u8, u16, u32),
         RequiredProtocol(u8, u8, u8),
@@ -182,17 +183,17 @@ pub fn parse_frame(input: &[u8]) -> nom::IResult<&[u8], Frame> {
 
     let (remaining, header) = try_parse!(input, alt!(
         do_parse!(
-            frame_type: be_u8 >>
-            channel: be_u16 >>
-            size: be_u32 >>
-            (Header::FrameHeader(frame_type, channel, size))
-        ) |
-        do_parse!(
-            tag!(b"AMPQ") >>
+            tag!(b"AMQP\0") >>
             major: be_u8 >>
             minor: be_u8 >>
             revision: be_u8 >>
             (Header::RequiredProtocol(major, minor, revision))
+        ) |
+        do_parse!(
+            frame_type: be_u8 >>
+            channel: be_u16 >>
+            size: be_u32 >>
+            (Header::FrameHeader(frame_type, channel, size))
         )
     ));
 
@@ -313,11 +314,11 @@ fn write_frame_helper<F>(frame_type: FrameType, channel: u16, buf: &mut Vec<u8>,
     // save enough info so that we can set the
     // size field later.
     let size_pos = buf.len() - 4;
-    let orig_buf_size = buf.len();
+    let orig_size = buf.len();
 
     frame_writer(buf)?;
 
-    let size = (buf.len() - orig_buf_size) as u32;
+    let size = (buf.len() - orig_size) as u32;
     BigEndian::write_u32(&mut buf[size_pos..size_pos+4], size);
 
     buf.write_u8(0xce);
@@ -348,6 +349,109 @@ fn write_long_string(buf: &mut Vec<u8>, val: &Vec<u8>) -> Result<(), FrameWriteE
     Ok(())
 }
 
+fn write_table_field_value(buf: &mut Vec<u8>, val: &TableFieldValue) -> Result<(), FrameWriteError> {
+    match val {
+        &TableFieldValue::Boolean(val) => {
+            buf.write_u8('t' as u8);
+            buf.write_u8(if val {1} else {0});
+        },
+        &TableFieldValue::I8(val) => {
+            buf.write_u8('b' as u8);
+            buf.write_i8(val);
+        },
+        &TableFieldValue::U8(val) => {
+            buf.write_u8('B' as u8);
+            buf.write_u8(val);
+        },
+        &TableFieldValue::I16(val) => {
+            buf.write_u8('U' as u8);
+            buf.write_i16::<BigEndian>(val);
+        },
+        &TableFieldValue::U16(val) => {
+            buf.write_u8('u' as u8);
+            buf.write_u16::<BigEndian>(val);
+        },
+        &TableFieldValue::I32(val) => {
+            buf.write_u8('I' as u8);
+            buf.write_i32::<BigEndian>(val);
+        },
+        &TableFieldValue::U32(val) => {
+            buf.write_u8('i' as u8);
+            buf.write_u32::<BigEndian>(val);
+        },
+        &TableFieldValue::I64(val) => {
+            buf.write_u8('L' as u8);
+            buf.write_i64::<BigEndian>(val);
+        },
+        &TableFieldValue::U64(val) => {
+            buf.write_u8('l' as u8);
+            buf.write_u64::<BigEndian>(val);
+        },
+        &TableFieldValue::Float(val) => {
+            buf.write_u8('f' as u8);
+            buf.write_f32::<BigEndian>(val);
+        },
+        &TableFieldValue::Double(val) => {
+            buf.write_u8('d' as u8);
+            buf.write_f64::<BigEndian>(val);
+        },
+        &TableFieldValue::Decimal(scale, val) => {
+            buf.write_u8('D' as u8);
+            buf.write_u8(scale);
+            buf.write_u64::<BigEndian>(val);
+        },
+        &TableFieldValue::ShortString(ref val) => {
+            buf.write_u8('s' as u8);
+            write_short_string(buf, val)?;
+        },
+        &TableFieldValue::LongString(ref val) => {
+            buf.write_u8('S' as u8);
+            write_long_string(buf, val)?;
+        },
+        &TableFieldValue::Array(ref val) => {
+            buf.write_u8('A' as u8);
+            let size_pos = buf.len();
+            buf.write_u32::<BigEndian>(0);
+            let orig_size = buf.len();
+
+            for v in val {
+                write_table_field_value(buf, v)?;
+            }
+
+            let size = (buf.len() - orig_size) as u32;
+            BigEndian::write_u32(&mut buf[size_pos..size_pos+4], size);
+        },
+        &TableFieldValue::Timestamp(val) => {
+            buf.write_u8('T' as u8);
+            buf.write_i64::<BigEndian>(val);
+        },
+        &TableFieldValue::Table(ref val) => {
+            buf.write_u8('F' as u8);
+            write_table(buf, val)?;
+        },
+        &TableFieldValue::NoField => {
+            buf.write_u8('V' as u8);
+        },
+    }
+    Ok(())
+}
+
+fn write_table(buf: &mut Vec<u8>, val: &HashMap<String, TableFieldValue>) -> Result<(), FrameWriteError> {
+    let size_pos = buf.len();
+    buf.write_u32::<BigEndian>(0);
+    let orig_size = buf.len();
+
+    for (key, value) in val {
+        write_short_string(buf, key)?;
+        write_table_field_value(buf, value)?;
+    }
+
+    let size = (buf.len() - orig_size) as u32;
+    BigEndian::write_u32(&mut buf[size_pos..size_pos+4], size);
+
+    Ok(())
+}
+
 pub fn write_frame(frame: Frame, buf: &mut Vec<u8>) -> Result<(), FrameWriteError> {
     match frame {
         Frame::RequiredProtocol(major, minor, revision) => {
@@ -362,11 +466,14 @@ pub fn write_frame(frame: Frame, buf: &mut Vec<u8>) -> Result<(), FrameWriteErro
                 Method::ConnectionStartOk{mechanism, response, locale} => {
                     write_frame_helper(FrameType::FRAME_METHOD, channel, buf, |buf| {
                         write_method_header(buf, 10, 11);
+                        write_table(buf, &HashMap::new());
                         write_short_string(buf, &mechanism)?;
                         write_long_string(buf, &response)?;
                         write_short_string(buf, &locale)?;
                         Ok(())
-                    })
+                    });
+                    println!("OUT: {:?}", buf);
+                    Ok(())
                 },
                 _ => panic!("Can't handle this frame!")
             }

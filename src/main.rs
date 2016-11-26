@@ -14,7 +14,7 @@ mod protocol;
 use std::iter::repeat;
 use std::str;
 
-use futures::{BoxFuture, Future, Stream};
+use futures::{BoxFuture, Future, Stream, Sink};
 
 use tokio_core::reactor::Core;
 use tokio_core::net::{TcpListener, TcpStream};
@@ -180,38 +180,45 @@ fn main() {
     core.run(handle_client).unwrap();
     */
 
+    /*
+            .send(Frame::RequiredProtocol(0, 9, 2)).and_then(|tcp_stream| {
+            println!("FRAME: {:?}", &frame);
+            Ok(());
+        })
+     *
+     * */
+
     let handle_client = TcpStream::connect(&address, &handle).and_then(|tcp_stream| {
         let framed = tcp_stream.framed(RmqCodec);
-        framed.send(Frame::RequiredProtocol(0, 9, 1)).and_then(|framed| {
-            framed.for_each(|frame| {
+        framed
+            .send(Frame::RequiredProtocol(0, 9, 1)).and_then(|x| x.into_future().map_err(|(x, y)| x))
+            .and_then(|(frame, framed)| {
+                println!("FRAME: {:?}", &frame);
+                framed.send(Frame::Method(0, Method::ConnectionStartOk{
+                    mechanism: From::from("PLAIN"),
+                    response: From::from(format!("PLAIN\0{}\0{}", "", "").as_bytes()),
+                    locale: From::from("en_US"),
+                }))
+            }).and_then(|x| x.into_future().map_err(|(x, y)| x))
+            .and_then(|(frame, framed)| {
                 println!("FRAME: {:?}", &frame);
                 Ok(())
             })
-        });
 
 
-        /*
-        write_all(tcp_stream, b"AMQP\0\0\x09\x01").and_then(|(tcp_stream, _)| {
-            println!("Sent data");
-            /*
-            tcp_stream.framed(RmqCodec).for_each(|frame| {
-                println!("FRAME: {:?}", &frame);
-                Ok(())
-            }).map_err(|err| println!("ERR: {:?}", &err))
-            */
-            let (sink, stream) = tcp_stream.framed(RmqCodec).split();
-        })
-    */
+
+
+
+            //.and_then(|framed| {
+            //    framed.for_each(|frame| {
+            //        println!("FRAME: {:?}", &frame);
+            //        Ok(())
+            //    })
+            //    let x: () = framed.into_future();
+            //    Ok(())
+            //    framed.into_future().and_then(|x| Ok(()))
+            //})
     });
-
-        //.map(|x| {
-        //    x.framed(RmqCodec).send(Frame::Method(Method::ConnectionStart(
-        //        version_major: 9,
-        //        version_minor: 1,
-        //        server_properties: HashMap<String, TableFieldValue
-        //});
-        //.for_each(|frame| {
-        //});
 
     core.run(handle_client).unwrap();
 }
