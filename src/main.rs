@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::iter::repeat;
 use std::str;
 
-use futures::{BoxFuture, Future, Stream, Sink};
+use futures::{BoxFuture, Future, Stream, Sink, future};
 
 use tokio_core::reactor::Core;
 use tokio_core::net::{TcpListener, TcpStream};
@@ -60,6 +60,12 @@ fn main() {
     let handle = core.handle();
     let address = "127.0.0.1:5672".parse().unwrap();
 
+    struct TuneParams {
+        channel_max: u16,
+        frame_max: u32,
+        heartbeat: u16,
+    }
+
     let handle_client = TcpStream::connect(&address, &handle).and_then(|tcp_stream| {
         let framed = tcp_stream.framed(RmqCodec);
         framed
@@ -77,7 +83,7 @@ fn main() {
                 }
             })
             .and_then(|framed| {
-                framed.send(Frame::Method(0, Method::ConnectionStartOk{
+                framed.send(Frame::Method(0, Method::ConnectionStartOk {
                     client_properties: HashMap::new(),
                     mechanism: From::from("PLAIN"),
                     response: From::from(format!("\0{}\0{}", "guest", "guest").as_bytes()),
@@ -93,7 +99,32 @@ fn main() {
                 }
             })
             .and_then(|(tune_method, framed)| {
-                println!("FRAME: {:?}", &tune_method);
+                if let Method::ConnectionTune{channel_max, frame_max, heartbeat} = tune_method {
+                    let tune_params = TuneParams {
+                        channel_max: channel_max,
+                        frame_max: frame_max,
+                        heartbeat: heartbeat,
+                    };
+                    let send_tune_ok = framed.send(Frame::Method(0, Method::ConnectionTuneOk {
+                        channel_max: tune_params.channel_max,
+                        frame_max: tune_params.frame_max,
+                        heartbeat: tune_params.heartbeat,
+                    }));
+                    let send_open = send_tune_ok.and_then(|framed| {
+                        framed.send(Frame::Method(0, Method::ConnectionOpen {
+                            virtual_host: From::from("/"),
+                            reserved_1: String::new(),
+                            reserved_2: true,
+                        }))
+                    }).and_then(|x| x.into_future().map_err(|(x, y)| x));
+                    future::ok(tune_params).join(send_open)
+                } else {
+                    panic!("Expected ConnectionTune method");
+                }
+            })
+
+            .and_then(|(tune_params, (frame, framed))| {
+                println!("FRAME: {:?}", &frame);
                 Ok(())
             })
     });

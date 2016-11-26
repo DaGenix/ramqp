@@ -77,6 +77,14 @@ pub enum Method {
         channel_max: u16,
         frame_max: u32,
         heartbeat: u16,
+    },
+    ConnectionOpen {
+        virtual_host: String,
+        reserved_1: String,
+        reserved_2: bool,
+    },
+    ConnectionOpenOk {
+        reserved_1: String,
     }
 }
 
@@ -225,6 +233,7 @@ pub fn parse_frame(input: &[u8]) -> nom::IResult<&[u8], Frame> {
             const CONNECTION_CLASS: u16 = 10;
             const CONNECTION_START: u16 = 10;
             const CONNECTION_TUNE: u16 = 30;
+            const CONNECTION_OPEN_OK: u16 = 41;
 
             println!("BUF: {:?}", remaining);
 
@@ -260,6 +269,15 @@ pub fn parse_frame(input: &[u8]) -> nom::IResult<&[u8], Frame> {
                                     channel_max: channel_max,
                                     frame_max: frame_max,
                                     heartbeat: heartbeat,
+                                }
+                            ))
+                        ) |
+                        (METHOD, CONNECTION_CLASS, CONNECTION_OPEN_OK) => do_parse!(
+                            reserved_1: parse_short_string >>
+                            (Frame::Method(
+                                channel,
+                                Method::ConnectionOpenOk {
+                                    reserved_1: From::from(reserved_1),
                                 }
                             ))
                         )
@@ -460,6 +478,16 @@ pub fn write_frame(frame: Frame, buf: &mut Vec<u8>) -> Result<(), FrameWriteErro
                         buf.write_u16::<BigEndian>(channel_max);
                         buf.write_u32::<BigEndian>(frame_max);
                         buf.write_u16::<BigEndian>(heartbeat);
+                        Ok(())
+                    });
+                    Ok(())
+                },
+                Method::ConnectionOpen{virtual_host, reserved_1, reserved_2} => {
+                    write_frame_helper(FrameType::FRAME_METHOD, channel, buf, |buf| {
+                        write_method_header(buf, 10, 40);
+                        write_short_string(buf, &virtual_host)?;
+                        write_short_string(buf, &reserved_1)?;
+                        buf.write_u8(if reserved_2 {1} else {0});
                         Ok(())
                     });
                     Ok(())
