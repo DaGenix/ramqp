@@ -4,11 +4,14 @@ version = "0.1.0"
 authors = ["Palmer Cox <palmer@fiscalnote.com>"]
 
 [dependencies]
-# tokio-core = "0.1"
-tokio-core = {git = "https://github.com/tokio-rs/tokio-core.git"}
-# futures = "^0.1.1"
-futures = {git = "https://github.com/alexcrichton/futures-rs.git"}
+tokio-core = "^0.1.1"
+# tokio-core = {git = "https://github.com/tokio-rs/tokio-core.git"}
+futures = "^0.1.6"
+# futures = {git = "https://github.com/alexcrichton/futures-rs.git"}
 # tokio-dns = {git = "https://github.com/sbstp/tokio-dns"}
 byteorder = "0.5"
-nom = { version = "^1.2.4", features = ["regexp"] }
+lazy_static = "^0.2.1"
+# nom = { version = "^1.2.4", features = ["regexp"] }
+nom = "^2.0.0"
+regex = "^0.1.80"
 
