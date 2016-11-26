@@ -60,113 +60,6 @@ fn main() {
     let handle = core.handle();
     let address = "127.0.0.1:5672".parse().unwrap();
 
-/*
-    let handle_client = TcpStream::connect(&address, &handle).and_then(|tcp_stream| {
-        write_all(tcp_stream, b"AMQP\0\0\x09\x01").and_then(|(tcp_stream, _)| {
-            let buffer: Vec<u8> = repeat(0).take(16384).collect();
-            futures::stream::unfold((tcp_stream, buffer), |tcp_stream| {
-                read_exact(tcp_stream, [0u8; 7]).and_then(|(tcp_stream, data)| {
-                    if let nom::IResult::Done(_, frame_header) = parse_frame_header(&data) {
-                        // TODO - prevent overflow?
-                        let data: Vec<u8> = repeat(0).take((frame_header.size + 1) as usize).collect();
-                        read_exact(tcp_stream, data).and_then(|(tcp_stream, data)| {
-                            match parse_frame(frame_header, &data) {
-                                nom::IResult::Done(_, frame) => Ok((frame, tcp_stream)),
-                                nom::IResult::Incomplete(_) => panic!("Incomplete"),
-                                nom::IResult::Error(err) => {
-                                    println!("ERROR: {:?}", err);
-                                    panic!("Error!")
-                                }
-                            }
-                        })
-                    } else {
-                        panic!("Failed to connect");
-                    }
-                })
-            }).for_each(|frame| {
-                match frame {
-                    Frame::Method(method) => {
-                        match method {
-                            Method::ConnectionStart{ref mechanisms, ..} => {
-                                println!("MECHANISMS: {}", str::from_utf8(mechanisms).unwrap());
-                            }
-                        }
-                    },
-                    _ => panic!("Unsupported frame!")
-                }
-                Ok(())
-            })
-        })
-    });
-*/
-
-    /*
-    fn extract_frame(...) -> BoxFuture<(Frame, (TcpStream, Vec<u8>))> {
-
-    }
-
-    fn process_read_data(buffer) -> BoxFuture<(BoxStream<(Frame, Option<Vec<u8>>, Vec<u8>)> {
-    }
-    */
-
-    /*
-    let handle_client = TcpStream::connect(&address, &handle).and_then(|tcp_stream| {
-        write_all(tcp_stream, b"AMQP\0\0\x09\x01").and_then(|(tcp_stream, _)| {
-            let buffer: Vec<u8> = repeat(0).take(16384).collect();
-
-            futures::stream::unfold((tcp_stream, buffer), |(tcp_stream, buffer)| {
-                read(tcp_stream, buffer).and_then(|(tcp_stream, buffer)| {
-                    futures::stream::unfold((0, Some(buffer)), |(pos, Some(buffer))| {
-
-                    })
-
-
-                    match parse_initial_response(&buffer) {
-                        nom::IResult::Done(remaining, initial_response) => {
-                            match parse_frame(frame_header, &data) {
-                                nom::IResult::Done(_, frame) => Ok((frame, (tcp_stream, buffer))),
-                                nom::IResult::Incomplete(_) => panic!("Incomplete"),
-                                nom::IResult::Error(err) => {
-                                    println!("ERROR: {:?}", err);
-                                    panic!("Error!")
-                                }
-                            }
-                        },
-                        nom::IResult::Incomplete(_) => {
-
-                        },
-                        nom::IResult::Error(err) -> {
-                            panic!("Invalid response!");
-                        }
-                    }
-
-
-                    if let nom::IResult::Done(_, frame_header) = parse_frame_header(&data) {
-                        // TODO - prevent overflow?
-                        let data: Vec<u8> = repeat(0).take((frame_header.size + 1) as usize).collect();
-                        read_exact(tcp_stream, data).and_then(|(tcp_stream, data)| {
-                        })
-                    } else {
-                        panic!("Failed to connect");
-                    }
-
-                })
-            })
-
-        })
-    });
-
-    core.run(handle_client).unwrap();
-    */
-
-    /*
-            .send(Frame::RequiredProtocol(0, 9, 2)).and_then(|tcp_stream| {
-            println!("FRAME: {:?}", &frame);
-            Ok(());
-        })
-     *
-     * */
-
     let handle_client = TcpStream::connect(&address, &handle).and_then(|tcp_stream| {
         let framed = tcp_stream.framed(RmqCodec);
         framed
@@ -177,15 +70,10 @@ fn main() {
             // a ConnectionStartOk frame with a username and password.
             .and_then(|(frame, framed)| {
                 match frame {
-                    Some(Frame::Method(_, Method::ConnectionStart{..})) => {
-                        Ok(framed)
-                    },
-                    Some(Frame::RequiredProtocol(major, minor, revision)) => {
-                        Err(io::Error::new(io::ErrorKind::Other, "Incompatible protocol version"))
-                    },
-                    _ => {
-                        Err(io::Error::new(io::ErrorKind::Other, "Unexpected Response"))
-                    }
+                    Some(Frame::Method(_, Method::ConnectionStart{..})) => Ok(framed),
+                    Some(Frame::RequiredProtocol(major, minor, revision)) =>
+                        Err(io::Error::new(io::ErrorKind::Other, "Incompatible protocol version")),
+                    _ => Err(io::Error::new(io::ErrorKind::Other, "Unexpected Response"))
                 }
             })
             .and_then(|framed| {
@@ -199,25 +87,12 @@ fn main() {
 
             //
             .and_then(|(frame, framed)| {
+                println!("FRAME: {:?}", &frame);
                 match frame {
                     Some(_) => Ok(()),
                     None => Err(io::Error::new(io::ErrorKind::Other, "Password Authentication Failed"))
                 }
             })
-
-
-
-
-
-            //.and_then(|framed| {
-            //    framed.for_each(|frame| {
-            //        println!("FRAME: {:?}", &frame);
-            //        Ok(())
-            //    })
-            //    let x: () = framed.into_future();
-            //    Ok(())
-            //    framed.into_future().and_then(|x| Ok(()))
-            //})
     });
 
     core.run(handle_client).unwrap();

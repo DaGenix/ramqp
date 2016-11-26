@@ -67,6 +67,16 @@ pub enum Method {
         mechanism: String,
         response: Vec<u8>,
         locale: String,
+    },
+    ConnectionTune {
+        channel_max: u16,
+        frame_max: u32,
+        heartbeat: u16,
+    },
+    ConnectionTuneOk {
+        channel_max: u16,
+        frame_max: u32,
+        heartbeat: u16,
     }
 }
 
@@ -135,25 +145,25 @@ named!(parse_space_seperated_long_string<&[u8], Vec<String> >,
 named!(parse_field_value<&[u8], TableFieldValue>,
     switch!(
         take!(1),
-        b"t" => chain!(val: be_u8, || {TableFieldValue::Boolean(val != 0)}) |
-        b"b" => chain!(val: be_i8, || {TableFieldValue::I8(val)}) |
-        b"B" => chain!(val: be_u8, || {TableFieldValue::U8(val)}) |
-        b"U" => chain!(val: be_i16, || {TableFieldValue::I16(val)}) |
-        b"u" => chain!(val: be_u16, || {TableFieldValue::U16(val)}) |
-        b"I" => chain!(val: be_i32, || {TableFieldValue::I32(val)}) |
-        b"i" => chain!(val: be_u32, || {TableFieldValue::U32(val)}) |
-        b"L" => chain!(val: be_i64, || {TableFieldValue::I64(val)}) |
-        b"l" => chain!(val: be_u64, || {TableFieldValue::U64(val)}) |
-        b"f" => chain!(val: be_f32, || {TableFieldValue::Float(val)}) |
-        b"d" => chain!(val: be_f64, || {TableFieldValue::Double(val)}) |
-        b"D" => chain!(scale: be_u8 ~ val: be_u64, || {TableFieldValue::Decimal(scale, val)}) |
-        b"s" => chain!(val: parse_short_string, || {TableFieldValue::ShortString(From::from(val))}) |
-        b"S" => chain!(val: parse_long_string, || {TableFieldValue::LongString(From::from(val))}) |
-        b"A" => chain!(
-            val: flat_map!(length_bytes!(be_u32), many0!(parse_field_value)),
-            || {TableFieldValue::Array(val)}) |
-        b"T" => chain!(val: be_i64, || {TableFieldValue::Timestamp(val)}) |
-        b"F" => chain!(val: parse_table, || {TableFieldValue::Table(val)}) |
+        b"t" => do_parse!(val: be_u8 >> (TableFieldValue::Boolean(val != 0))) |
+        b"b" => do_parse!(val: be_i8 >> (TableFieldValue::I8(val))) |
+        b"B" => do_parse!(val: be_u8 >> (TableFieldValue::U8(val))) |
+        b"U" => do_parse!(val: be_i16 >> (TableFieldValue::I16(val))) |
+        b"u" => do_parse!(val: be_u16 >> (TableFieldValue::U16(val))) |
+        b"I" => do_parse!(val: be_i32 >> (TableFieldValue::I32(val))) |
+        b"i" => do_parse!(val: be_u32 >> (TableFieldValue::U32(val))) |
+        b"L" => do_parse!(val: be_i64 >> (TableFieldValue::I64(val))) |
+        b"l" => do_parse!(val: be_u64 >> (TableFieldValue::U64(val))) |
+        b"f" => do_parse!(val: be_f32 >> (TableFieldValue::Float(val))) |
+        b"d" => do_parse!(val: be_f64 >> (TableFieldValue::Double(val))) |
+        b"D" => do_parse!(scale: be_u8 >> val: be_u64 >> (TableFieldValue::Decimal(scale, val))) |
+        b"s" => do_parse!(val: parse_short_string >> (TableFieldValue::ShortString(From::from(val)))) |
+        b"S" => do_parse!(val: parse_long_string >> (TableFieldValue::LongString(From::from(val)))) |
+        b"A" => do_parse!(
+            val: flat_map!(length_bytes!(be_u32), many0!(parse_field_value)) >>
+            (TableFieldValue::Array(val))) |
+        b"T" => do_parse!(val: be_i64 >> (TableFieldValue::Timestamp(val))) |
+        b"F" => do_parse!(val: parse_table >> (TableFieldValue::Table(val))) |
         b"V" => value!(TableFieldValue::NoField)
     )
 );
@@ -214,6 +224,7 @@ pub fn parse_frame(input: &[u8]) -> nom::IResult<&[u8], Frame> {
 
             const CONNECTION_CLASS: u16 = 10;
             const CONNECTION_START: u16 = 10;
+            const CONNECTION_TUNE: u16 = 30;
 
             println!("BUF: {:?}", remaining);
 
@@ -236,6 +247,19 @@ pub fn parse_frame(input: &[u8]) -> nom::IResult<&[u8], Frame> {
                                     server_properties: server_properties,
                                     mechanisms: mechanisms,
                                     locales: locales,
+                                }
+                            ))
+                        ) |
+                        (METHOD, CONNECTION_CLASS, CONNECTION_TUNE) => do_parse!(
+                            channel_max: be_u16 >>
+                            frame_max: be_u32 >>
+                            heartbeat: be_u16 >>
+                            (Frame::Method(
+                                channel,
+                                Method::ConnectionTune {
+                                    channel_max: channel_max,
+                                    frame_max: frame_max,
+                                    heartbeat: heartbeat,
                                 }
                             ))
                         )
@@ -428,7 +452,16 @@ pub fn write_frame(frame: Frame, buf: &mut Vec<u8>) -> Result<(), FrameWriteErro
                         write_short_string(buf, &locale)?;
                         Ok(())
                     });
-                    println!("OUT: {:?}", buf);
+                    Ok(())
+                },
+                Method::ConnectionTuneOk{channel_max, frame_max, heartbeat} => {
+                    write_frame_helper(FrameType::FRAME_METHOD, channel, buf, |buf| {
+                        write_method_header(buf, 10, 31);
+                        buf.write_u16::<BigEndian>(channel_max);
+                        buf.write_u32::<BigEndian>(frame_max);
+                        buf.write_u16::<BigEndian>(heartbeat);
+                        Ok(())
+                    });
                     Ok(())
                 },
                 _ => panic!("Can't handle this frame!")
