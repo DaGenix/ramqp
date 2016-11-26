@@ -25,12 +25,9 @@ use std::error::Error;
 use std::io;
 
 use protocol::{
-    InitialResponse,
     Frame,
     Method,
-    parse_initial_response,
     parse_frame,
-    parse_frame_header,
     write_frame,
 };
 
@@ -63,31 +60,18 @@ impl Codec for RmqCodec {
     type Out = Frame;
 
     fn decode(&mut self, buf: &mut EasyBuf) -> io::Result<Option<Frame>> {
-        match parse_initial_response(buf.as_slice()) {
-            nom::IResult::Done(_, initial_response) => match initial_response {
-                InitialResponse::FrameHeader(frame_header) => {
-                    // We make sure to never negotiate a frame size bigger
-                    // than usize which makes this safe.
-                    if buf.len() < 8 || buf.len() - 8 < frame_header.size as usize {
-                        return Ok(None);
-                    }
-                    buf.drain_to(7);
-                    // We make sure to never negotiate a frame size bigger
-                    // than usize which makes this safe.
-                    match parse_frame(&frame_header, buf.drain_to(frame_header.size as usize + 1).as_slice()) {
-                        nom::IResult::Done(_, frame) => Ok(Some(frame)),
-                        _ => Err(io::Error::new(io::ErrorKind::Other, "Invalid Frame"))
-                    }
-                },
-                InitialResponse::RequiredProtocol(..) => panic!("Bad protocol")
-            },
-            nom::IResult::Incomplete(_) => Ok(None),
-            _ => Err(io::Error::new(io::ErrorKind::Other, "Invalid Frame"))
-        }
+        let (remaining_len, frame) = match parse_frame(buf.as_slice()) {
+            nom::IResult::Done(remaining, frame) => (remaining.len(), frame),
+            nom::IResult::Incomplete(_) => return Ok(None),
+            nom::IResult::Error(err) => return Err(io::Error::new(io::ErrorKind::Other, err.description()))
+        };
+        let len = buf.len();
+        buf.drain_to(len - remaining_len);
+        Ok(Some(frame))
     }
 
     fn encode(&mut self, msg: Frame, buf: &mut Vec<u8>) -> io::Result<()> {
-        write_frame(0, msg, buf)?;
+        write_frame(msg, buf)?;
         Ok(())
     }
 }
