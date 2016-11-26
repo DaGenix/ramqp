@@ -541,6 +541,23 @@ pub fn write_frame(frame: Frame, buf: &mut Vec<u8>) -> Result<(), FrameWriteErro
                 _ => panic!("Can't handle this frame!")
             }
         },
+        Frame::ContentHeader(channel, header) => {
+            write_frame_helper(FrameType::FRAME_HEADER, channel, buf, |buf| {
+                buf.write_u16::<BigEndian>(header.class_id);
+                buf.write_u16::<BigEndian>(header.weight);
+                buf.write_u64::<BigEndian>(header.body_size);
+                buf.write_u16::<BigEndian>(header.property_flags);
+                // TODO - do this right!
+                // write_table(buf, &header.properties)?;
+                Ok(())
+            })
+        },
+        Frame::ContentBody(channel, data) => {
+            write_frame_helper(FrameType::FRAME_BODY, channel, buf, |buf| {
+                buf.write(&data);
+                Ok(())
+            })
+        },
         _ => panic!("Can't handle this frame!")
     }
 }

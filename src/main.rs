@@ -23,11 +23,12 @@ use tokio_core::io::{EasyBuf, IoFuture, read_exact, write_all, read, Codec, Io};
 
 use std::error::Error;
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use protocol::{
     Frame,
     Method,
+    ContentHeader,
     parse_frame,
     write_frame,
 };
@@ -51,6 +52,7 @@ impl Codec for RmqCodec {
 
     fn encode(&mut self, msg: Frame, buf: &mut Vec<u8>) -> io::Result<()> {
         write_frame(msg, buf)?;
+        println!("SENDING: {:?}", &buf);
         Ok(())
     }
 }
@@ -62,19 +64,21 @@ struct TuneParams {
 }
 
 struct ConnectionState {
-    sink: stream::SplitSink<tokio_core::io::Framed<tokio_core::net::TcpStream, RmqCodec>>,
+    //sink: stream::SplitSink<tokio_core::io::Framed<tokio_core::net::TcpStream, RmqCodec>>,
+    sender: futures::sync::mpsc::Sender<Frame>,
     stream: stream::SplitStream<tokio_core::io::Framed<tokio_core::net::TcpStream, RmqCodec>>,
     next_channel: u16,
 }
 
 pub struct Connection {
-    state: Arc<ConnectionState>,
+    state: Arc<Mutex<ConnectionState>>,
 }
 
 impl Connection {
-    pub fn open<'a, A>(addr: A, handle: &Handle) -> BoxFuture<Connection, std::io::Error>
+    pub fn open<'a, A>(addr: A, handle: &Handle) -> Box<Future<Item=Connection, Error=std::io::Error>>
             where A: Into<&'a std::net::SocketAddr> {
-        TcpStream::connect(addr.into(), &handle).and_then(|tcp_stream| {
+        let handle_for_later = handle.clone();
+        let f = TcpStream::connect(addr.into(), &handle.clone()).and_then(|tcp_stream| {
             let framed = tcp_stream.framed(RmqCodec);
             framed
                 // Send the AMPQ version that we support - 0.9.1
@@ -138,25 +142,104 @@ impl Connection {
                         _ => Err(io::Error::new(io::ErrorKind::Other, "Failed to open connection"))
                     }
                 })
-                .and_then(|(tune_params, framed)| {
+                .and_then(move |(tune_params, framed)| {
                     let (sink, stream) = framed.split();
+
+                    let (sender, receiver) = futures::sync::mpsc::channel(0);
+
+                    let receiver_stream = receiver.fold(sink, |sink, frame| {
+                        sink.send(frame).map_err(|x| panic!())
+                    }).map(|x| ());
+
+                    handle_for_later.spawn(receiver_stream);
+
                     Ok(Connection {
-                        state: Arc::new(ConnectionState {
-                            sink: sink,
+                        state: Arc::new(Mutex::new(ConnectionState {
+                            sender: sender,
                             stream: stream,
-                        })
+                            next_channel: 1,
+                        }))
                     })
                 })
-        }).boxed()
+        });
+        Box::new(f)
+    }
+
+    pub fn channel(&self) -> Box<Future<Item=Channel, Error=std::io::Error>> {
+        let channel;
+        let sender;
+        {
+            let mut state = self.state.lock().unwrap();
+            channel = state.next_channel;
+            state.next_channel += 1;
+            sender = state.sender.clone();
+        }
+        let fut = sender.send(Frame::Method(channel, Method::ChannelOpen {
+            reserved_1: String::new(),
+        })).map(move |sender| {
+            Channel {
+                sender: sender,
+                channel: channel
+            }
+        }).map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, "Failed to open channel")
+        });
+        Box::new(fut)
     }
 }
+
+pub struct Channel {
+    sender: futures::sync::mpsc::Sender<Frame>,
+    channel: u16,
+}
+
+impl Channel {
+    pub fn basic_publish(self, data: Vec<u8>) -> Box<Future<Item=Channel, Error=std::io::Error>> {
+        let data_len = data.len() as u64;
+        let Channel{sender, channel} = self;
+        let fut = sender.send(Frame::Method(channel, Method::BasicPublish {
+            reserved_1: 0,
+            exchange: From::from(""),
+            routing_key: From::from("test"),
+            mandatory: false,
+            immediate: false,
+        })).and_then(move |sender| {
+            sender.send(Frame::ContentHeader(channel, ContentHeader {
+                class_id: 60,
+                weight: 0,
+                body_size: data_len,
+                property_flags: 0,
+                properties: HashMap::new(),
+            }))
+        }).and_then(move |sender| {
+            sender.send(Frame::ContentBody(channel, data))
+        }).map(move |sender| {
+            Channel {
+                sender: sender,
+                channel: channel,
+            }
+        }).map_err(|err| {
+            io::Error::new(io::ErrorKind::Other, "Failed to open channel")
+        });
+        Box::new(fut)
+    }
+}
+
 
 fn main() {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
     let address = "127.0.0.1:5672".parse().unwrap();
 
-    let handle_client = Connection::open(&address, &core.handle());
-    core.run(handle_client).unwrap();
+    let handle_client = Connection::open(&address, &core.handle()).and_then(|connection| {
+        connection.channel()
+    }).and_then(|channel| {
+        channel.basic_publish(From::from(&['a' as u8][..]))
+    });
+    let channel = core.run(handle_client);
+
+    // std::thread::sleep(std::time::Duration::from_secs(10));
+
+    loop { core.turn(None) }
 }
 
