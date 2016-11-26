@@ -11,6 +11,7 @@ extern crate regex;
 
 mod protocol;
 
+use std::collections::HashMap;
 use std::iter::repeat;
 use std::str;
 
@@ -191,17 +192,23 @@ fn main() {
     let handle_client = TcpStream::connect(&address, &handle).and_then(|tcp_stream| {
         let framed = tcp_stream.framed(RmqCodec);
         framed
+
+            // Send the AMPQ version that we support - 0.9.1
             .send(Frame::RequiredProtocol(0, 9, 1)).and_then(|x| x.into_future().map_err(|(x, y)| x))
+
+            // Get back a ConnectionStart frame. Verify the frame and then send out
+            // a ConnectionStartOk frame with a username and password.
             .and_then(|(frame, framed)| {
-                println!("FRAME: {:?}", &frame);
                 framed.send(Frame::Method(0, Method::ConnectionStartOk{
+                    client_properties: HashMap::new(),
                     mechanism: From::from("PLAIN"),
-                    response: From::from(format!("PLAIN\0{}\0{}", "", "").as_bytes()),
+                    response: From::from(format!("\0{}\0{}", "guest", "guest").as_bytes()),
                     locale: From::from("en_US"),
                 }))
             }).and_then(|x| x.into_future().map_err(|(x, y)| x))
+
+            //
             .and_then(|(frame, framed)| {
-                println!("FRAME: {:?}", &frame);
                 Ok(())
             })
 

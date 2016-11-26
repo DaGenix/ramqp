@@ -63,6 +63,7 @@ pub enum Method {
         locales: Vec<String>,
     },
     ConnectionStartOk {
+        client_properties: HashMap<String, TableFieldValue>,
         mechanism: String,
         response: Vec<u8>,
         locale: String,
@@ -463,10 +464,10 @@ pub fn write_frame(frame: Frame, buf: &mut Vec<u8>) -> Result<(), FrameWriteErro
         }
         Frame::Method(channel, method) => {
             match method {
-                Method::ConnectionStartOk{mechanism, response, locale} => {
+                Method::ConnectionStartOk{client_properties, mechanism, response, locale} => {
                     write_frame_helper(FrameType::FRAME_METHOD, channel, buf, |buf| {
                         write_method_header(buf, 10, 11);
-                        write_table(buf, &HashMap::new());
+                        write_table(buf, &client_properties);
                         write_short_string(buf, &mechanism)?;
                         write_long_string(buf, &response)?;
                         write_short_string(buf, &locale)?;
