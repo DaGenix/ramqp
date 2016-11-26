@@ -215,6 +215,8 @@ pub fn parse_frame(input: &[u8]) -> nom::IResult<&[u8], Frame> {
             const CONNECTION_CLASS: u16 = 10;
             const CONNECTION_START: u16 = 10;
 
+            println!("BUF: {:?}", remaining);
+
             let (remaining, frame) = try_parse!(
                 remaining,
                 do_parse!(
@@ -243,56 +245,9 @@ pub fn parse_frame(input: &[u8]) -> nom::IResult<&[u8], Frame> {
                 )
             );
             nom::IResult::Done(remaining, frame)
-
-            // nom::IResult::Done(remaining, Frame::Heartbeat)
         }
     }
 }
-
-
-/*
-pub fn parse_frame<'a, 'b>(frame_header: &'a FrameHeader, data: &'b [u8])
-        -> nom::IResult<&'b [u8], Frame> {
-    const METHOD: u8 = 1;
-
-    const CONNECTION_CLASS: u16 = 10;
-    const CONNECTION_START: u16 = 10;
-
-    do_parse!(
-        frame_header
-    );
-
-    /*
-//    let parser = closure!(
-        chain!(
-            result: switch!(
-                value!(frame_header.frame_type),
-                METHOD => switch!(
-                    tuple!(be_u16, be_u16),
-                    (CONNECTION_CLASS, CONNECTION_START) => chain!(
-                        version_major: be_u8 ~
-                        version_minor: be_u8 ~
-                        server_properties: parse_table ~
-                        mechanisms: parse_space_seperated_long_string ~
-                        locales: parse_space_seperated_long_string,
-                        || {Frame::Method(Method::ConnectionStart{
-                            version_major: version_major,
-                            version_minor: version_minor,
-                            server_properties: server_properties,
-                            mechanisms: mechanisms,
-                            locales: locales,
-                        })}
-                    )
-                )
-            ) ~
-            tag!(b"\xCE"),
-            || { result }
-        )
-//    );
-//    parser(data)
-    */
-}
-*/
 
 pub enum FrameWriteError {
     ValueTooBig,
