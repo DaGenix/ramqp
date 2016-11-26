@@ -22,8 +22,8 @@ use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::io::{EasyBuf, IoFuture, read_exact, write_all, read, Codec, Io};
 
 use std::error::Error;
-
 use std::io;
+use std::sync::Arc;
 
 use protocol::{
     Frame,
@@ -61,9 +61,14 @@ struct TuneParams {
     heartbeat: u16,
 }
 
-pub struct Connection {
+struct ConnectionState {
     sink: stream::SplitSink<tokio_core::io::Framed<tokio_core::net::TcpStream, RmqCodec>>,
     stream: stream::SplitStream<tokio_core::io::Framed<tokio_core::net::TcpStream, RmqCodec>>,
+    next_channel: u16,
+}
+
+pub struct Connection {
+    state: Arc<ConnectionState>,
 }
 
 impl Connection {
@@ -136,8 +141,10 @@ impl Connection {
                 .and_then(|(tune_params, framed)| {
                     let (sink, stream) = framed.split();
                     Ok(Connection {
-                        sink: sink,
-                        stream: stream,
+                        state: Arc::new(ConnectionState {
+                            sink: sink,
+                            stream: stream,
+                        })
                     })
                 })
         }).boxed()

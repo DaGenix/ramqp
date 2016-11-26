@@ -85,7 +85,22 @@ pub enum Method {
     },
     ConnectionOpenOk {
         reserved_1: String,
-    }
+    },
+
+    ChannelOpen {
+        reserved_1: String,
+    },
+    ChannelOpenOk {
+        reserved_1: Vec<u8>,
+    },
+
+    BasicPublish {
+        reserved_1: u16,
+        exchange: String,
+        routing_key: String,
+        mandatory: bool,
+        immediate: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -235,6 +250,9 @@ pub fn parse_frame(input: &[u8]) -> nom::IResult<&[u8], Frame> {
             const CONNECTION_TUNE: u16 = 30;
             const CONNECTION_OPEN_OK: u16 = 41;
 
+            const CHANNEL_CLASS: u16 = 20;
+            const CHANNEL_OPEN_OK: u16 = 11;
+
             println!("BUF: {:?}", remaining);
 
             let (remaining, frame) = try_parse!(
@@ -277,6 +295,15 @@ pub fn parse_frame(input: &[u8]) -> nom::IResult<&[u8], Frame> {
                             (Frame::Method(
                                 channel,
                                 Method::ConnectionOpenOk {
+                                    reserved_1: From::from(reserved_1),
+                                }
+                            ))
+                        ) |
+                        (METHOD, CHANNEL_CLASS, CHANNEL_OPEN_OK) => do_parse!(
+                            reserved_1: parse_long_string >>
+                            (Frame::Method(
+                                channel,
+                                Method::ChannelOpenOk {
                                     reserved_1: From::from(reserved_1),
                                 }
                             ))
@@ -488,6 +515,25 @@ pub fn write_frame(frame: Frame, buf: &mut Vec<u8>) -> Result<(), FrameWriteErro
                         write_short_string(buf, &virtual_host)?;
                         write_short_string(buf, &reserved_1)?;
                         buf.write_u8(if reserved_2 {1} else {0});
+                        Ok(())
+                    });
+                    Ok(())
+                },
+                Method::ChannelOpen{reserved_1} => {
+                    write_frame_helper(FrameType::FRAME_METHOD, channel, buf, |buf| {
+                        write_method_header(buf, 20, 10);
+                        write_short_string(buf, &reserved_1)?;
+                        Ok(())
+                    });
+                    Ok(())
+                },
+                Method::BasicPublish{reserved_1, exchange, routing_key, mandatory, immediate} => {
+                    write_frame_helper(FrameType::FRAME_METHOD, channel, buf, |buf| {
+                        write_method_header(buf, 60, 40);
+                        buf.write_u16::<BigEndian>(reserved_1);
+                        write_short_string(buf, &exchange)?;
+                        write_short_string(buf, &routing_key)?;
+                        buf.write_u8(if mandatory {1} else {0} | if immediate {2} else {0});
                         Ok(())
                     });
                     Ok(())
