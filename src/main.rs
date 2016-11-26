@@ -85,13 +85,16 @@ fn main() {
                 }))
             }).and_then(|x| x.into_future().map_err(|(x, y)| x))
 
-            //
+            // Handle the connection tune method
             .and_then(|(frame, framed)| {
-                println!("FRAME: {:?}", &frame);
                 match frame {
-                    Some(_) => Ok(()),
-                    None => Err(io::Error::new(io::ErrorKind::Other, "Password Authentication Failed"))
+                    Some(Frame::Method(_, tune_method @ Method::ConnectionTune{..})) => Ok((tune_method, framed)),
+                    _ => Err(io::Error::new(io::ErrorKind::Other, "Password Authentication Failed"))
                 }
+            })
+            .and_then(|(tune_method, framed)| {
+                println!("FRAME: {:?}", &tune_method);
+                Ok(())
             })
     });
 
