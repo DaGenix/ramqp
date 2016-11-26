@@ -123,8 +123,14 @@ fn main() {
                 }
             })
 
+            // Handle the connections actually being opened
             .and_then(|(tune_params, (frame, framed))| {
-                println!("FRAME: {:?}", &frame);
+                match frame {
+                    Some(Frame::Method(_, tune_method @ Method::ConnectionOpenOk{..})) => Ok(tune_params, framed),
+                    _ => Err(io::Error::new(io::ErrorKind::Other, "Failed to open connection"))
+                }
+            })
+            .and_then(|(tune_params, framed)| {
                 Ok(())
             })
     });
