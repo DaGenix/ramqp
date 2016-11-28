@@ -27,8 +27,10 @@ use protocol::{
     Frame,
     Method,
     ContentHeader,
+    BasicProperties,
     parse_frame,
     write_frame,
+    default_basic_properties,
 };
 
 struct RmqCodec;
@@ -70,13 +72,6 @@ struct ConnectionState {
 pub struct Connection {
     state: Arc<Mutex<ConnectionState>>,
 }
-
-/*
-fn next_item<S, I, E>(stream: S) -> ()
-        where S: Stream<Item=I, Error=E> {
-    stream.into_future().map_err(|(item, _)| item)
-}
-*/
 
 impl Connection {
     pub fn open<'a, A, S1, S2, S3>(
@@ -223,8 +218,7 @@ impl Channel {
                 class_id: 60,
                 weight: 0,
                 body_size: data_len,
-                property_flags: 0,
-                properties: HashMap::new(),
+                properties: BasicProperties { .. default_basic_properties() },
             }))
         }).and_then(move |sender| {
             sender.send(Frame::ContentBody(channel, data))

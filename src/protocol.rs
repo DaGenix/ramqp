@@ -168,13 +168,66 @@ pub enum Method {
     },
 }
 
+const FLAG_CONTENT_TYPE: u16 = (1 << 15);
+const FLAG_CONTENT_ENCODING: u16 = (1 << 14);
+const FLAG_HEADERS: u16 = (1 << 13);
+const FLAG_DELIVERY_MODE: u16 = (1 << 12);
+const FLAG_PRIORITY: u16 = (1 << 11);
+const FLAG_CORRELATION_ID: u16 = (1 << 10);
+const FLAG_REPLY_TO: u16 = (1 << 9);
+const FLAG_EXPIRATION: u16 = (1 << 8);
+const FLAG_MESSAGE_ID: u16 = (1 << 7);
+const FLAG_TIMESTAMP: u16 = (1 << 6);
+const FLAG_TYPE: u16 = (1 << 5);
+const FLAG_USER_ID: u16 = (1 << 4);
+const FLAG_APP_ID: u16 = (1 << 3);
+const FLAG_CLUSTER_ID: u16 = (1 << 2);
+
+#[derive(Debug)]
+pub struct BasicProperties {
+    pub content_type: Option<String>,
+    pub content_encoding: Option<String>,
+    pub headers: Option<HashMap<String, TableFieldValue>>,
+    pub delivery_mode: Option<u8>,
+    pub priority: Option<u8>,
+    pub correlation_id: Option<String>,
+    pub reply_to: Option<String>,
+    pub expiration: Option<String>,
+    pub message_id: Option<String>,
+    pub timestamp: Option<u64>,
+    pub message_type: Option<String>,
+    pub user_id: Option<String>,
+    pub app_id: Option<String>,
+    pub cluster_id: Option<String>,
+}
+
+pub fn default_basic_properties() -> BasicProperties {
+    BasicProperties {
+        content_type: None,
+        content_encoding: None,
+        headers: None,
+        delivery_mode: None,
+        priority: None,
+        correlation_id: None,
+        reply_to: None,
+        expiration: None,
+        message_id: None,
+        timestamp: None,
+        message_type: None,
+        user_id: None,
+        app_id: None,
+        cluster_id: None,
+    }
+}
+
 #[derive(Debug)]
 pub struct ContentHeader {
     pub class_id: u16,
     pub weight: u16,
     pub body_size: u64,
-    pub property_flags: u16,
-    pub properties: HashMap<String, TableFieldValue>,
+    // In theory, there can be different types of properties
+    // In practice, though, only BasicProperties exists.
+    pub properties: BasicProperties,
 }
 
 #[derive(Debug)]
@@ -377,14 +430,41 @@ pub fn parse_frame(input: &[u8]) -> nom::IResult<&[u8], Frame> {
                         weight: be_u16 >>
                         body_size: be_u64 >>
                         property_flags: be_u16 >>
-                        properties: cond!(property_flags & 0x0001 != 0, parse_table) >>
+                        content_type: cond!(property_flags & FLAG_CONTENT_TYPE != 0, parse_short_string) >>
+                        content_encoding: cond!(property_flags & FLAG_CONTENT_ENCODING != 0, parse_short_string) >>
+                        headers: cond!(property_flags & FLAG_HEADERS != 0, parse_table) >>
+                        delivery_mode: cond!(property_flags & FLAG_DELIVERY_MODE != 0, be_u8) >>
+                        priority: cond!(property_flags & FLAG_PRIORITY != 0, be_u8) >>
+                        correlation_id: cond!(property_flags & FLAG_CORRELATION_ID != 0, parse_short_string) >>
+                        reply_to: cond!(property_flags & FLAG_REPLY_TO != 0, parse_short_string) >>
+                        expiration: cond!(property_flags & FLAG_EXPIRATION != 0, parse_short_string) >>
+                        message_id: cond!(property_flags & FLAG_MESSAGE_ID != 0, parse_short_string) >>
+                        timestamp: cond!(property_flags & FLAG_TIMESTAMP != 0, be_u64) >>
+                        message_type: cond!(property_flags & FLAG_TYPE != 0, parse_short_string) >>
+                        user_id: cond!(property_flags & FLAG_USER_ID != 0, parse_short_string) >>
+                        app_id: cond!(property_flags & FLAG_APP_ID != 0, parse_short_string) >>
+                        cluster_id: cond!(property_flags & FLAG_CLUSTER_ID != 0, parse_short_string) >>
                         tag!(&[FRAME_END]) >>
                         (Frame::ContentHeader(channel, ContentHeader{
                             class_id: class_id,
                             weight: weight,
                             body_size: body_size,
-                            property_flags: property_flags,
-                            properties: properties.unwrap_or_else(HashMap::new),
+                            properties: BasicProperties {
+                                content_type: content_type.map(From::from),
+                                content_encoding: content_encoding.map(From::from),
+                                headers: headers,
+                                delivery_mode: delivery_mode,
+                                priority: priority,
+                                correlation_id: correlation_id.map(From::from),
+                                reply_to: reply_to.map(From::from),
+                                expiration: expiration.map(From::from),
+                                message_id: message_id.map(From::from),
+                                timestamp: timestamp,
+                                message_type: message_type.map(From::from),
+                                user_id: user_id.map(From::from),
+                                app_id: app_id.map(From::from),
+                                cluster_id: cluster_id.map(From::from),
+                            },
                         }))
                     )
                 ),
@@ -641,10 +721,70 @@ pub fn write_frame(frame: Frame, buf: &mut Vec<u8>) -> Result<(), FrameWriteErro
                 buf.write_u16::<BigEndian>(header.class_id)?;
                 buf.write_u16::<BigEndian>(header.weight)?;
                 buf.write_u64::<BigEndian>(header.body_size)?;
-                buf.write_u16::<BigEndian>(header.property_flags)?;
-                if header.property_flags & 0x0001 != 0 {
-                    write_table(buf, &header.properties)?;
+
+                let flag_pos = buf.len();
+                let mut flags = 0;
+                buf.write_u16::<BigEndian>(0)?;
+
+                if header.properties.content_type.is_some() {
+                    flags |= FLAG_CONTENT_TYPE;
+                    write_short_string(buf, &header.properties.content_type.as_ref().unwrap())?;
                 }
+                if header.properties.content_encoding.is_some() {
+                    flags |= FLAG_CONTENT_ENCODING;
+                    write_short_string(buf, &header.properties.content_encoding.as_ref().unwrap())?;
+                }
+                if header.properties.headers.is_some() {
+                    flags |= FLAG_HEADERS;
+                    write_table(buf, &header.properties.headers.as_ref().unwrap())?;
+                }
+                if header.properties.delivery_mode.is_some() {
+                    flags |= FLAG_DELIVERY_MODE;
+                    buf.write_u8(*header.properties.delivery_mode.as_ref().unwrap())?;
+                }
+                if header.properties.priority.is_some() {
+                    flags |= FLAG_PRIORITY;
+                    buf.write_u8(*header.properties.priority.as_ref().unwrap())?;
+                }
+                if header.properties.correlation_id.is_some() {
+                    flags |= FLAG_CORRELATION_ID;
+                    write_short_string(buf, &header.properties.correlation_id.as_ref().unwrap())?;
+                }
+                if header.properties.reply_to.is_some() {
+                    flags |= FLAG_REPLY_TO;
+                    write_short_string(buf, &header.properties.reply_to.as_ref().unwrap())?;
+                }
+                if header.properties.expiration.is_some() {
+                    flags |= FLAG_EXPIRATION;
+                    write_short_string(buf, &header.properties.expiration.as_ref().unwrap())?;
+                }
+                if header.properties.message_id.is_some() {
+                    flags |= FLAG_MESSAGE_ID;
+                    write_short_string(buf, &header.properties.message_id.as_ref().unwrap())?;
+                }
+                if header.properties.timestamp.is_some() {
+                    flags |= FLAG_TIMESTAMP;
+                    buf.write_u64::<BigEndian>(*header.properties.timestamp.as_ref().unwrap())?;
+                }
+                if header.properties.message_type.is_some() {
+                    flags |= FLAG_TYPE;
+                    write_short_string(buf, &header.properties.message_type.as_ref().unwrap())?;
+                }
+                if header.properties.user_id.is_some() {
+                    flags |= FLAG_USER_ID;
+                    write_short_string(buf, &header.properties.user_id.as_ref().unwrap())?;
+                }
+                if header.properties.app_id.is_some() {
+                    flags |= FLAG_APP_ID;
+                    write_short_string(buf, &header.properties.app_id.as_ref().unwrap())?;
+                }
+                if header.properties.cluster_id.is_some() {
+                    flags |= FLAG_CLUSTER_ID;
+                    write_short_string(buf, &header.properties.cluster_id.as_ref().unwrap())?;
+                }
+
+                BigEndian::write_u16(&mut buf[flag_pos..flag_pos+2], flags);
+
                 Ok(())
             })
         },
