@@ -65,15 +65,54 @@ struct TuneParams {
     heartbeat: u16,
 }
 
+enum ConsumerState {
+    NoConsumer,
+    // Openeing(Box<Future<Item=Consumer, Error=std::io::Error>>),
+    // Opened(<Box<Sink<SinkItem=Frame, SinkError=std::io::Error>>),
+}
+
+enum ChannelState {
+    Opening(Box<Future<Item=Channel, Error=std::io::Error> >),
+    Opened {
+        consumer_state: ConsumerState,
+    },
+}
+
 struct ConnectionState {
     sender: futures::sync::mpsc::Sender<Frame>,
-    stream: stream::SplitStream<tokio_core::io::Framed<tokio_core::net::TcpStream, RmqCodec>>,
+    channels: HashMap<u16, ChannelState>,
     next_channel: u16,
 }
 
 pub struct Connection {
     state: Rc<RefCell<ConnectionState>>,
     tune_params: TuneParams,
+}
+
+fn spawn_frame_receiver(
+        handle: &Handle,
+        connection_state: Rc<RefCell<ConnectionState> >,
+        stream: stream::SplitStream<tokio_core::io::Framed<tokio_core::net::TcpStream, RmqCodec> >) {
+    fn sender_box<F>(f: F) -> Box<Future<Item=futures::sync::mpsc::Sender<Frame>, Error=()> >
+            where F: futures::IntoFuture<Item=futures::sync::mpsc::Sender<Frame>, Error=()>,
+                  F::Future: 'static {
+        Box::new(f.into_future())
+    }
+
+    let sender = connection_state.borrow().sender.clone();
+    let s = stream.map_err(|_| panic!()).fold(sender, |sender, frame| {
+        println!("Got frame: {:?}", &frame);
+        match frame {
+            Frame::Method(channel, channel_open @ Method::ChannelOpenOk{..}) => {
+                sender_box(Ok(sender))
+            },
+            Frame::Heartbeat => {
+                sender_box(sender.send(Frame::Heartbeat).map_err(|_| panic!()))
+            },
+            _ => panic!("Unexpected frame"),
+        }
+    }).map(|_| ());
+    handle.spawn(s);
 }
 
 impl Connection {
@@ -166,12 +205,16 @@ impl Connection {
 
                     handle_for_later.spawn(receiver_stream);
 
+                    let state = Rc::new(RefCell::new(ConnectionState {
+                        sender: sender,
+                        next_channel: 1,
+                        channels: HashMap::new(),
+                    }));
+
+                    spawn_frame_receiver(&handle_for_later, state.clone(), stream);
+
                     Ok(Connection {
-                        state: Rc::new(RefCell::new(ConnectionState {
-                            sender: sender,
-                            stream: stream,
-                            next_channel: 1,
-                        })),
+                        state: state,
                         tune_params: tune_params,
                     })
                 })
@@ -282,8 +325,9 @@ fn main() {
                 Some(x)
             })
         });
-    let channel = core.run(handle_client);
+    //let channel = core.run(handle_client);
 
+    core.handle().spawn(handle_client.map(|_| ()).map_err(|_| ()));
     loop { core.turn(None) }
 }
 

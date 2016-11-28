@@ -794,7 +794,11 @@ pub fn write_frame(frame: Frame, buf: &mut Vec<u8>) -> Result<(), FrameWriteErro
                 Ok(())
             })
         },
-        _ => panic!("Can't handle this frame!")
+        Frame::Heartbeat => {
+            write_frame_helper(FrameType::Heartbeat, 0, buf, |buf| {
+                Ok(())
+            })
+        }
     }
 }
 
