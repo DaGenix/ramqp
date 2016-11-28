@@ -13,6 +13,7 @@ mod protocol;
 mod async_loop;
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::str;
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -73,7 +74,7 @@ enum ConsumerState {
 }
 
 enum ChannelState {
-    Opening(Box<Future<Item=Channel, Error=std::io::Error> >),
+    Opening(futures::sync::oneshot::Sender<Channel>),
     Opened {
         consumer_state: ConsumerState,
     },
@@ -82,7 +83,7 @@ enum ChannelState {
 
 struct ConnectionState {
     sender: futures::sync::mpsc::Sender<Frame>,
-    channels: HashMap<u16, ChannelState>,
+    channels: HashMap<u16, Option<ChannelState> >,
     next_channel: u16,
 }
 
@@ -94,6 +95,7 @@ pub struct Connection {
 fn spawn_frame_receiver(
         handle: &Handle,
         connection_state: Rc<RefCell<ConnectionState> >,
+        frame_max: u32,
         stream: stream::SplitStream<tokio_core::io::Framed<tokio_core::net::TcpStream, RmqCodec> >) {
     fn sender_box<F>(f: F) -> Box<Future<Item=futures::sync::mpsc::Sender<Frame>, Error=()> >
             where F: futures::IntoFuture<Item=futures::sync::mpsc::Sender<Frame>, Error=()>,
@@ -102,11 +104,31 @@ fn spawn_frame_receiver(
     }
 
     let sender = connection_state.borrow().sender.clone();
-    let s = stream.map_err(|_| panic!()).fold(sender, |sender, frame| {
+    let s = stream.map_err(|_| panic!()).fold(sender, move |sender, frame| {
         println!("Got frame: {:?}", &frame);
         match frame {
             Frame::Method(channel, Method::ChannelOpenOk{..}) => {
-                sender_box(Ok(sender))
+                let mut connection_state = connection_state.borrow_mut();
+                match connection_state.channels.entry(channel){
+                    Entry::Occupied(mut entry) => {
+                        match entry.get_mut().take() {
+                            Some(ChannelState::Opening(result)) => {
+                                result.complete(Channel {
+                                    sender: Some(sender.clone()),
+                                    channel: channel,
+                                    frame_max: frame_max,
+                                });
+                                entry.insert(Some(ChannelState::Opened {
+                                    consumer_state: ConsumerState::NoConsumer,
+                                }));
+                                sender_box(Ok(sender))
+                            },
+                            Some(ChannelState::Opened{..}) | Some(ChannelState::Closing) => panic!(),
+                            None => panic!()
+                        }
+                    },
+                    Entry::Vacant(_) => panic!()
+                }
             },
             Frame::Heartbeat => {
                 sender_box(sender.send(Frame::Heartbeat).map_err(|_| panic!()))
@@ -213,7 +235,11 @@ impl Connection {
                         channels: HashMap::new(),
                     }));
 
-                    spawn_frame_receiver(&handle_for_later, state.clone(), stream);
+                    spawn_frame_receiver(
+                        &handle_for_later,
+                        state.clone(),
+                        tune_params.frame_max,
+                        stream);
 
                     Ok(Connection {
                         state: state,
@@ -224,16 +250,25 @@ impl Connection {
         Box::new(f)
     }
 
-    pub fn channel(&self) -> Box<Future<Item=Channel, Error=std::io::Error>> {
-        let channel;
-        let sender;
-        {
-            let mut state = self.state.borrow_mut();
-            channel = state.next_channel;
-            state.next_channel += 1;
-            sender = state.sender.clone();
-        }
-        let frame_max = self.tune_params.frame_max;
+    pub fn channel(&self) -> Box<Future<Item=Channel, Error=std::io::Error> > {
+//        let channel;
+ //       let sender;
+        let mut state = self.state.borrow_mut();
+        let channel = state.next_channel;
+        state.next_channel += 1;
+        let (sender, receiver) = futures::sync::oneshot::channel();
+        state.channels.insert(
+            channel,
+            Some(ChannelState::Opening(sender)));
+        let fut = state.sender.clone().send(Frame::Method(channel, Method::ChannelOpen {
+            reserved_1: String::new(),
+        }))
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to open channel"))
+        .and_then(|_| receiver.map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to open channel")));
+        Box::new(fut)
+
+
+        /*
         let fut = sender.send(Frame::Method(channel, Method::ChannelOpen {
             reserved_1: String::new(),
         })).map(move |sender| {
@@ -246,6 +281,7 @@ impl Connection {
             io::Error::new(io::ErrorKind::Other, "Failed to open channel")
         });
         Box::new(fut)
+        */
     }
 }
 
@@ -307,11 +343,12 @@ fn main() {
         "guest",
         "guest",
         "/").and_then(|connection| {
-            connection.channel()
+            connection.channel().map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to open channel"))
+        /*
         }).and_then(move |channel| {
             future::ok(channel).join(Timeout::new(Duration::new(1000, 0), &handle))
         });
-        /*
+        */
         }).and_then(|channel| {
             async_loop::async_loop(channel, |channel| {
                 // println!("SENDING");
@@ -331,7 +368,7 @@ fn main() {
                 Some(x)
             })
         });
-        */
+
     //let channel = core.run(handle_client);
 
     core.handle().spawn(handle_client.map(|_| ()).map_err(|_| ()));
