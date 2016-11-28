@@ -18,10 +18,11 @@ use std::io;
 use std::sync::{Arc, Mutex};
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::time::Duration;
 
 use futures::{Future, Stream, Sink, future, stream};
 
-use tokio_core::reactor::{Core, Handle};
+use tokio_core::reactor::{Core, Handle, Timeout};
 use tokio_core::net::TcpStream;
 use tokio_core::io::{EasyBuf, Codec, Io};
 
@@ -76,6 +77,7 @@ enum ChannelState {
     Opened {
         consumer_state: ConsumerState,
     },
+    Closing,
 }
 
 struct ConnectionState {
@@ -103,7 +105,7 @@ fn spawn_frame_receiver(
     let s = stream.map_err(|_| panic!()).fold(sender, |sender, frame| {
         println!("Got frame: {:?}", &frame);
         match frame {
-            Frame::Method(channel, channel_open @ Method::ChannelOpenOk{..}) => {
+            Frame::Method(channel, Method::ChannelOpenOk{..}) => {
                 sender_box(Ok(sender))
             },
             Frame::Heartbeat => {
@@ -306,6 +308,10 @@ fn main() {
         "guest",
         "/").and_then(|connection| {
             connection.channel()
+        }).and_then(move |channel| {
+            future::ok(channel).join(Timeout::new(Duration::new(1000, 0), &handle))
+        });
+        /*
         }).and_then(|channel| {
             async_loop::async_loop(channel, |channel| {
                 // println!("SENDING");
@@ -325,6 +331,7 @@ fn main() {
                 Some(x)
             })
         });
+        */
     //let channel = core.run(handle_client);
 
     core.handle().spawn(handle_client.map(|_| ()).map_err(|_| ()));
