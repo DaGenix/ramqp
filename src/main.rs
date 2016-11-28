@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use std::str;
 use std::io;
 use std::sync::{Arc, Mutex};
+use std::rc::Rc;
+use std::cell::RefCell;
 
 use futures::{Future, Stream, Sink, future, stream};
 
@@ -70,7 +72,8 @@ struct ConnectionState {
 }
 
 pub struct Connection {
-    state: Arc<Mutex<ConnectionState>>,
+    state: Rc<RefCell<ConnectionState>>,
+    tune_params: TuneParams,
 }
 
 impl Connection {
@@ -164,11 +167,12 @@ impl Connection {
                     handle_for_later.spawn(receiver_stream);
 
                     Ok(Connection {
-                        state: Arc::new(Mutex::new(ConnectionState {
+                        state: Rc::new(RefCell::new(ConnectionState {
                             sender: sender,
                             stream: stream,
                             next_channel: 1,
-                        }))
+                        })),
+                        tune_params: tune_params,
                     })
                 })
         });
@@ -179,17 +183,19 @@ impl Connection {
         let channel;
         let sender;
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.borrow_mut();
             channel = state.next_channel;
             state.next_channel += 1;
             sender = state.sender.clone();
         }
+        let frame_max = self.tune_params.frame_max;
         let fut = sender.send(Frame::Method(channel, Method::ChannelOpen {
             reserved_1: String::new(),
         })).map(move |sender| {
             Channel {
-                sender: sender,
-                channel: channel
+                sender: Some(sender),
+                channel: channel,
+                frame_max: frame_max,
             }
         }).map_err(|err| {
             io::Error::new(io::ErrorKind::Other, "Failed to open channel")
@@ -199,13 +205,14 @@ impl Connection {
 }
 
 pub struct Channel {
-    sender: futures::sync::mpsc::Sender<Frame>,
+    sender: Option<futures::sync::mpsc::Sender<Frame>>,
     channel: u16,
+    frame_max: u32,
 }
 
 impl Channel {
     pub fn basic_publish(
-            self,
+            mut self,
             exchange: String,
             routing_key: String,
             basic_properties: BasicProperties,
@@ -213,31 +220,33 @@ impl Channel {
             immediate: bool,
             data: Vec<u8>)
             -> Box<Future<Item=Channel, Error=std::io::Error>> {
-        let data_len = data.len() as u64;
-        let Channel{sender, channel} = self;
-        let fut = sender.send(Frame::Method(channel, Method::BasicPublish {
+        let sender = self.sender.take().unwrap();
+
+        let mut messages = Vec::new();
+        messages.push(Ok(Frame::Method(self.channel, Method::BasicPublish {
             reserved_1: 0,
             exchange: exchange,
             routing_key: routing_key,
             mandatory: mandatory,
             immediate: immediate,
-        })).and_then(move |sender| {
-            sender.send(Frame::ContentHeader(channel, ContentHeader {
-                class_id: 60,
-                weight: 0,
-                body_size: data_len,
-                properties: basic_properties,
-            }))
-        }).and_then(move |sender| {
-            sender.send(Frame::ContentBody(channel, data))
-        }).map(move |sender| {
-            Channel {
-                sender: sender,
-                channel: channel,
-            }
-        }).map_err(|err| {
+        })));
+        messages.push(Ok(Frame::ContentHeader(self.channel, ContentHeader {
+            class_id: 60,
+            weight: 0,
+            body_size: data.len() as u64,
+            properties: basic_properties,
+        })));
+        for data_chunk in data.chunks(self.frame_max as usize) {
+            messages.push(Ok(Frame::ContentBody(self.channel, From::from(data_chunk))));
+        }
+
+        let fut = sender.send_all(stream::iter(messages)).map(move |(sender, _)| {
+            self.sender = Some(sender);
+            self
+        }).map_err(|_| {
             io::Error::new(io::ErrorKind::Other, "Failed to open channel")
         });
+
         Box::new(fut)
     }
 }
@@ -257,13 +266,18 @@ fn main() {
         }).and_then(|channel| {
             async_loop::async_loop(channel, |channel| {
                 // println!("SENDING");
+                let mut msg = String::new();
+                for _ in 0..1000000 {
+                    msg.push('a');
+                }
                 let x = channel.basic_publish(
                     From::from(""),
                     From::from("palmer_test"),
                     BasicProperties{delivery_mode: Some(2), ..default_basic_properties()},
                     false,
                     false,
-                    From::from("Hello World!".as_bytes())
+                    From::from(msg.as_bytes())
+                    //From::from("Hello World!".as_bytes())
                 );
                 Some(x)
             })
