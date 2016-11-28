@@ -260,7 +260,7 @@ fn main() {
                 let x = channel.basic_publish(
                     From::from(""),
                     From::from("palmer_test"),
-                    default_basic_properties(),
+                    BasicProperties{delivery_mode: Some(2), ..default_basic_properties()},
                     false,
                     false,
                     From::from("Hello World!".as_bytes())
@@ -269,8 +269,6 @@ fn main() {
             })
         });
     let channel = core.run(handle_client);
-
-    // std::thread::sleep(std::time::Duration::from_secs(10));
 
     loop { core.turn(None) }
 }
