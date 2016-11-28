@@ -10,20 +10,18 @@ extern crate tokio_core;
 extern crate regex;
 
 mod protocol;
+mod async_loop;
 
 use std::collections::HashMap;
-use std::iter::repeat;
 use std::str;
-
-use futures::{BoxFuture, Future, Stream, Sink, future, stream};
-
-use tokio_core::reactor::{Core, Handle};
-use tokio_core::net::{TcpListener, TcpStream};
-use tokio_core::io::{EasyBuf, IoFuture, read_exact, write_all, read, Codec, Io};
-
-use std::error::Error;
 use std::io;
 use std::sync::{Arc, Mutex};
+
+use futures::{Future, Stream, Sink, future, stream};
+
+use tokio_core::reactor::{Core, Handle};
+use tokio_core::net::TcpStream;
+use tokio_core::io::{EasyBuf, Codec, Io};
 
 use protocol::{
     Frame,
@@ -52,7 +50,7 @@ impl Codec for RmqCodec {
 
     fn encode(&mut self, msg: Frame, buf: &mut Vec<u8>) -> io::Result<()> {
         write_frame(msg, buf)?;
-        println!("SENDING: {:?}", &buf);
+        // println!("SENDING: {:?}", &buf);
         Ok(())
     }
 }
@@ -64,7 +62,6 @@ struct TuneParams {
 }
 
 struct ConnectionState {
-    //sink: stream::SplitSink<tokio_core::io::Framed<tokio_core::net::TcpStream, RmqCodec>>,
     sender: futures::sync::mpsc::Sender<Frame>,
     stream: stream::SplitStream<tokio_core::io::Framed<tokio_core::net::TcpStream, RmqCodec>>,
     next_channel: u16,
@@ -74,9 +71,27 @@ pub struct Connection {
     state: Arc<Mutex<ConnectionState>>,
 }
 
+/*
+fn next_item<S, I, E>(stream: S) -> ()
+        where S: Stream<Item=I, Error=E> {
+    stream.into_future().map_err(|(item, _)| item)
+}
+*/
+
 impl Connection {
-    pub fn open<'a, A>(addr: A, handle: &Handle) -> Box<Future<Item=Connection, Error=std::io::Error>>
-            where A: Into<&'a std::net::SocketAddr> {
+    pub fn open<'a, A, S1, S2, S3>(
+            handle: &Handle,
+            addr: A,
+            username: S1,
+            password: S2,
+            virtual_host: S3) -> Box<Future<Item=Connection, Error=std::io::Error>>
+            where A: Into<&'a std::net::SocketAddr>,
+                  S1: Into<String>,
+                  S2: Into<String>,
+                  S3: Into<String> {
+        let username = username.into();
+        let password = password.into();
+        let virtual_host = virtual_host.into();
         let handle_for_later = handle.clone();
         let f = TcpStream::connect(addr.into(), &handle.clone()).and_then(|tcp_stream| {
             let framed = tcp_stream.framed(RmqCodec);
@@ -94,11 +109,11 @@ impl Connection {
                         _ => Err(io::Error::new(io::ErrorKind::Other, "Unexpected Response"))
                     }
                 })
-                .and_then(|framed| {
+                .and_then(move |framed| {
                     framed.send(Frame::Method(0, Method::ConnectionStartOk {
                         client_properties: HashMap::new(),
                         mechanism: From::from("PLAIN"),
-                        response: From::from(format!("\0{}\0{}", "guest", "guest").as_bytes()),
+                        response: From::from(format!("\0{}\0{}", username, password).as_bytes()),
                         locale: From::from("en_US"),
                     }))
                 }).and_then(|x| x.into_future().map_err(|(x, y)| x))
@@ -110,7 +125,7 @@ impl Connection {
                         _ => Err(io::Error::new(io::ErrorKind::Other, "Password Authentication Failed"))
                     }
                 })
-                .and_then(|(tune_method, framed)| {
+                .and_then(move |(tune_method, framed)| {
                     if let Method::ConnectionTune{channel_max, frame_max, heartbeat} = tune_method {
                         let tune_params = TuneParams {
                             channel_max: channel_max,
@@ -124,7 +139,7 @@ impl Connection {
                         }));
                         let send_open = send_tune_ok.and_then(|framed| {
                             framed.send(Frame::Method(0, Method::ConnectionOpen {
-                                virtual_host: From::from("/"),
+                                virtual_host: virtual_host,
                                 reserved_1: String::new(),
                                 reserved_2: true,
                             }))
@@ -200,7 +215,7 @@ impl Channel {
         let fut = sender.send(Frame::Method(channel, Method::BasicPublish {
             reserved_1: 0,
             exchange: From::from(""),
-            routing_key: From::from("test"),
+            routing_key: From::from("palmer_test"),
             mandatory: false,
             immediate: false,
         })).and_then(move |sender| {
@@ -225,17 +240,24 @@ impl Channel {
     }
 }
 
-
 fn main() {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
     let address = "127.0.0.1:5672".parse().unwrap();
 
-    let handle_client = Connection::open(&address, &core.handle()).and_then(|connection| {
-        connection.channel()
-    }).and_then(|channel| {
-        channel.basic_publish(From::from(&['a' as u8][..]))
-    });
+    let handle_client = Connection::open(
+        &core.handle(),
+        &address,
+        "guest",
+        "guest",
+        "/").and_then(|connection| {
+            connection.channel()
+        }).and_then(|channel| {
+            async_loop::async_loop(channel, |channel| {
+                // println!("SENDING");
+                Some(channel.basic_publish(From::from("Hello World!".as_bytes())))
+            })
+        });
     let channel = core.run(handle_client);
 
     // std::thread::sleep(std::time::Duration::from_secs(10));
