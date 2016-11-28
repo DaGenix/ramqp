@@ -204,21 +204,29 @@ pub struct Channel {
 }
 
 impl Channel {
-    pub fn basic_publish(self, data: Vec<u8>) -> Box<Future<Item=Channel, Error=std::io::Error>> {
+    pub fn basic_publish(
+            self,
+            exchange: String,
+            routing_key: String,
+            basic_properties: BasicProperties,
+            mandatory: bool,
+            immediate: bool,
+            data: Vec<u8>)
+            -> Box<Future<Item=Channel, Error=std::io::Error>> {
         let data_len = data.len() as u64;
         let Channel{sender, channel} = self;
         let fut = sender.send(Frame::Method(channel, Method::BasicPublish {
             reserved_1: 0,
-            exchange: From::from(""),
-            routing_key: From::from("palmer_test"),
-            mandatory: false,
-            immediate: false,
+            exchange: exchange,
+            routing_key: routing_key,
+            mandatory: mandatory,
+            immediate: immediate,
         })).and_then(move |sender| {
             sender.send(Frame::ContentHeader(channel, ContentHeader {
                 class_id: 60,
                 weight: 0,
                 body_size: data_len,
-                properties: BasicProperties { .. default_basic_properties() },
+                properties: basic_properties,
             }))
         }).and_then(move |sender| {
             sender.send(Frame::ContentBody(channel, data))
@@ -249,7 +257,15 @@ fn main() {
         }).and_then(|channel| {
             async_loop::async_loop(channel, |channel| {
                 // println!("SENDING");
-                Some(channel.basic_publish(From::from("Hello World!".as_bytes())))
+                let x = channel.basic_publish(
+                    From::from(""),
+                    From::from("palmer_test"),
+                    default_basic_properties(),
+                    false,
+                    false,
+                    From::from("Hello World!".as_bytes())
+                );
+                Some(x)
             })
         });
     let channel = core.run(handle_client);
