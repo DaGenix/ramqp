@@ -14,6 +14,9 @@ extern crate regex;
 mod protocol;
 mod async_loop;
 mod sloppy_timeout_stream;
+mod stream_ext;
+
+use stream_ext::next_item;
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -168,7 +171,7 @@ impl Connection {
             let framed = tcp_stream.framed(RmqCodec);
             framed
                 // Send the AMPQ version that we support - 0.9.1
-                .send(Frame::RequiredProtocol(0, 9, 1)).and_then(|x| x.into_future().map_err(|(x, y)| x))
+                .send(Frame::RequiredProtocol(0, 9, 1)).and_then(next_item)
 
                 // Get back a ConnectionStart frame. Verify the frame and then send out
                 // a ConnectionStartOk frame with a username and password.
@@ -187,7 +190,7 @@ impl Connection {
                         response: From::from(format!("\0{}\0{}", username, password).as_bytes()),
                         locale: From::from("en_US"),
                     }))
-                }).and_then(|x| x.into_future().map_err(|(x, y)| x))
+                }).and_then(next_item)
 
                 // Handle the connection tune method
                 .and_then(|(frame, framed)| {
@@ -214,7 +217,7 @@ impl Connection {
                                 reserved_1: String::new(),
                                 reserved_2: true,
                             }))
-                        }).and_then(|x| x.into_future().map_err(|(x, y)| x));
+                        }).and_then(next_item);
                         future::ok(tune_params).join(send_open)
                     } else {
                         panic!("Expected ConnectionTune method");
