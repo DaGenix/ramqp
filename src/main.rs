@@ -4,13 +4,16 @@ extern crate nom;
 #[macro_use]
 extern crate lazy_static;
 
-extern crate byteorder;
+#[macro_use]
 extern crate futures;
+
+extern crate byteorder;
 extern crate tokio_core;
 extern crate regex;
 
 mod protocol;
 mod async_loop;
+mod sloppy_timeout_stream;
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -96,6 +99,7 @@ fn spawn_frame_receiver(
         handle: &Handle,
         connection_state: Rc<RefCell<ConnectionState> >,
         frame_max: u32,
+        heartbeat: u16,
         stream: stream::SplitStream<tokio_core::io::Framed<tokio_core::net::TcpStream, RmqCodec> >) {
     fn sender_box<F>(f: F) -> Box<Future<Item=futures::sync::mpsc::Sender<Frame>, Error=()> >
             where F: futures::IntoFuture<Item=futures::sync::mpsc::Sender<Frame>, Error=()>,
@@ -104,6 +108,14 @@ fn spawn_frame_receiver(
     }
 
     let sender = connection_state.borrow().sender.clone();
+    let stream = sloppy_timeout_stream::SloppyTimeoutStream::new(
+        stream,
+        Duration::from_secs((3 * heartbeat) as u64),
+        handle);
+    let stream = match stream {
+        Ok(stream) => stream,
+        Err(_) => panic!()
+    };
     let s = stream.map_err(|_| panic!()).fold(sender, move |sender, frame| {
         println!("Got frame: {:?}", &frame);
         match frame {
@@ -239,6 +251,7 @@ impl Connection {
                         &handle_for_later,
                         state.clone(),
                         tune_params.frame_max,
+                        tune_params.heartbeat,
                         stream);
 
                     Ok(Connection {
