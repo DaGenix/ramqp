@@ -100,7 +100,8 @@ fn spawn_frame_receiver(
         connection_state: Rc<RefCell<ConnectionState> >,
         frame_max: u32,
         heartbeat: u16,
-        stream: stream::SplitStream<tokio_core::io::Framed<tokio_core::net::TcpStream, RmqCodec> >) {
+        stream: stream::SplitStream<tokio_core::io::Framed<tokio_core::net::TcpStream, RmqCodec> >)
+            -> io::Result<()> {
     fn sender_box<F>(f: F) -> Box<Future<Item=futures::sync::mpsc::Sender<Frame>, Error=()> >
             where F: futures::IntoFuture<Item=futures::sync::mpsc::Sender<Frame>, Error=()>,
                   F::Future: 'static {
@@ -110,13 +111,9 @@ fn spawn_frame_receiver(
     let sender = connection_state.borrow().sender.clone();
     let stream = sloppy_timeout_stream::SloppyTimeoutStream::new(
         stream,
-        Duration::from_secs((3 * heartbeat) as u64),
-        handle);
-    let stream = match stream {
-        Ok(stream) => stream,
-        Err(_) => panic!()
-    };
-    let s = stream.map_err(|_| panic!()).fold(sender, move |sender, frame| {
+        Duration::from_secs((2 * heartbeat) as u64),
+        handle)?;
+    let s = stream.map_err(|err| panic!(format!("ERR: {}", err))).fold(sender, move |sender, frame| {
         println!("Got frame: {:?}", &frame);
         match frame {
             Frame::Method(channel, Method::ChannelOpenOk{..}) => {
@@ -149,6 +146,7 @@ fn spawn_frame_receiver(
         }
     }).map(|_| ());
     handle.spawn(s);
+    Ok(())
 }
 
 impl Connection {
@@ -252,7 +250,7 @@ impl Connection {
                         state.clone(),
                         tune_params.frame_max,
                         tune_params.heartbeat,
-                        stream);
+                        stream)?;
 
                     Ok(Connection {
                         state: state,

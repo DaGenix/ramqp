@@ -16,7 +16,7 @@ lazy_static!{
 }
 
 #[repr(u8)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum FrameType {
     Method = 1,
     Header = 2,
@@ -41,11 +41,13 @@ pub const FRAME_END: u8 = 206;
 // TODO - what are these used for?
 // TODO - I don't think I need these
 // pub const FRAME_MIN_SIZE: u8 = 4096;
-// pub const REPLY_SUCCESS: u16 = 200;
 
 #[repr(u16)]
-#[derive(Debug)]
-pub enum ErrorCode {
+#[derive(Debug, Clone)]
+pub enum ReplyCode {
+    // Ok
+    ReplySuccess = 200,
+
     // Soft errors
     ContentTooLarge = 311,
     NoConsumers = 313,
@@ -68,6 +70,32 @@ pub enum ErrorCode {
     InternalError = 541,
 }
 
+impl ReplyCode {
+    fn from_code(code: u16) -> Option<ReplyCode> {
+        match code {
+            200 => Some(ReplyCode::ReplySuccess),
+            311 => Some(ReplyCode::NoConsumers),
+            403 => Some(ReplyCode::AccessRefused),
+            404 => Some(ReplyCode::NotFound),
+            405 => Some(ReplyCode::ResourceLocked),
+            406 => Some(ReplyCode::PreconditionFailed),
+            320 => Some(ReplyCode::ConnectionForced),
+            402 => Some(ReplyCode::InvalidPath),
+            501 => Some(ReplyCode::FrameError),
+            502 => Some(ReplyCode::SyntaxError),
+            503 => Some(ReplyCode::CommandInvalid),
+            504 => Some(ReplyCode::ChannelError),
+            505 => Some(ReplyCode::UnexpectedFrame),
+            506 => Some(ReplyCode::ResourceError),
+            530 => Some(ReplyCode::NotAllowed),
+            540 => Some(ReplyCode::NotImplemented),
+            541 => Some(ReplyCode::InternalError),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 enum MethodCode {
     ConnectionStart,
     ConnectionStartOk,
@@ -75,9 +103,13 @@ enum MethodCode {
     ConnectionTuneOk,
     ConnectionOpen,
     ConnectionOpenOk,
+    ConnectionClose,
+    ConnectionCloseOk,
 
     ChannelOpen,
     ChannelOpenOk,
+    ChannelClose,
+    ChannelCloseOk,
 
     BasicPublish,
 }
@@ -91,9 +123,13 @@ impl MethodCode {
             &MethodCode::ConnectionTuneOk => (10, 31),
             &MethodCode::ConnectionOpen => (10, 40),
             &MethodCode::ConnectionOpenOk => (10, 41),
+            &MethodCode::ConnectionClose => (10, 50),
+            &MethodCode::ConnectionCloseOk => (10, 51),
 
             &MethodCode::ChannelOpen => (20, 10),
             &MethodCode::ChannelOpenOk => (20, 11),
+            &MethodCode::ChannelClose => (20, 40),
+            &MethodCode::ChannelCloseOk => (20, 41),
 
             &MethodCode::BasicPublish => (60, 40),
         }
@@ -107,9 +143,13 @@ impl MethodCode {
             (10, 31) => Some(MethodCode::ConnectionTuneOk),
             (10, 40) => Some(MethodCode::ConnectionOpen),
             (10, 41) => Some(MethodCode::ConnectionOpenOk),
+            (10, 50) => Some(MethodCode::ConnectionClose),
+            (10, 51) => Some(MethodCode::ConnectionCloseOk),
 
             (20, 10) => Some(MethodCode::ChannelOpen),
             (20, 11) => Some(MethodCode::ChannelOpenOk),
+            (20, 40) => Some(MethodCode::ChannelClose),
+            (20, 41) => Some(MethodCode::ChannelCloseOk),
 
             (60, 40) => Some(MethodCode::BasicPublish),
 
@@ -151,6 +191,12 @@ pub enum Method {
     ConnectionOpenOk {
         reserved_1: String,
     },
+    ConnectionClose {
+        reply_code: ReplyCode,
+        reply_text: String,
+        method: Option<MethodCode>,
+    },
+    ConnectionCloseOk,
 
     ChannelOpen {
         reserved_1: String,
@@ -158,6 +204,12 @@ pub enum Method {
     ChannelOpenOk {
         reserved_1: Vec<u8>,
     },
+    ChannelClose {
+        reply_code: ReplyCode,
+        reply_text: String,
+        method: Option<MethodCode>,
+    },
+    ChannelCloseOk,
 
     BasicPublish {
         reserved_1: u16,
@@ -409,6 +461,21 @@ pub fn parse_frame(input: &[u8]) -> nom::IResult<&[u8], Frame> {
                                     }
                                 ))
                             ) |
+                            MethodCode::ConnectionClose => do_parse!(
+                                reply_code: map_opt!(be_u16, ReplyCode::from_code) >>
+                                reply_text: parse_short_string >>
+                                class_id: be_u16 >>
+                                method_id: be_u16 >>
+                                (Frame::Method(
+                                    channel,
+                                    Method::ConnectionClose {
+                                        reply_code: reply_code,
+                                        reply_text: From::from(reply_text),
+                                        method: MethodCode::from_codes(class_id, method_id),
+                                    }
+                                ))
+                            ) |
+                            MethodCode::ConnectionCloseOk => value!(Frame::Method(channel, Method::ConnectionCloseOk)) |
                             MethodCode::ChannelOpenOk => do_parse!(
                                 reserved_1: parse_long_string >>
                                 (Frame::Method(
@@ -417,7 +484,22 @@ pub fn parse_frame(input: &[u8]) -> nom::IResult<&[u8], Frame> {
                                         reserved_1: From::from(reserved_1),
                                     }
                                 ))
-                            )
+                            ) |
+                            MethodCode::ChannelClose => do_parse!(
+                                reply_code: map_opt!(be_u16, ReplyCode::from_code) >>
+                                reply_text: parse_short_string >>
+                                class_id: be_u16 >>
+                                method_id: be_u16 >>
+                                (Frame::Method(
+                                    channel,
+                                    Method::ChannelClose {
+                                        reply_code: reply_code,
+                                        reply_text: From::from(reply_text),
+                                        method: MethodCode::from_codes(class_id, method_id),
+                                    }
+                                ))
+                            ) |
+                            MethodCode::ChannelCloseOk => value!(Frame::Method(channel, Method::ChannelCloseOk))
                         ) >>
                         tag!(&[FRAME_END]) >>
                         (result)
@@ -696,6 +778,27 @@ pub fn write_frame(frame: Frame, buf: &mut Vec<u8>) -> Result<(), FrameWriteErro
                         Ok(())
                     })
                 },
+                Method::ConnectionClose{reply_code, reply_text, method} => {
+                    write_frame_helper(FrameType::Method, channel, buf, |buf| {
+                        write_method_header(buf, MethodCode::ConnectionClose)?;
+                        buf.write_u16::<BigEndian>(reply_code as u16);
+                        write_short_string(buf, &reply_text)?;
+                        if let Some((class_id, method_id)) = method.as_ref().map(MethodCode::to_codes) {
+                            buf.write_u16::<BigEndian>(class_id);
+                            buf.write_u16::<BigEndian>(method_id);
+                        } else {
+                            buf.write_u16::<BigEndian>(0);
+                            buf.write_u16::<BigEndian>(0);
+                        }
+                        Ok(())
+                    })
+                }
+                Method::ConnectionCloseOk => {
+                    write_frame_helper(FrameType::Method, channel, buf, |buf| {
+                        write_method_header(buf, MethodCode::ConnectionCloseOk)?;
+                        Ok(())
+                    })
+                }
                 Method::ChannelOpen{reserved_1} => {
                     write_frame_helper(FrameType::Method, channel, buf, |buf| {
                         write_method_header(buf, MethodCode::ChannelOpen)?;
@@ -703,6 +806,27 @@ pub fn write_frame(frame: Frame, buf: &mut Vec<u8>) -> Result<(), FrameWriteErro
                         Ok(())
                     })
                 },
+                Method::ChannelClose{reply_code, reply_text, method} => {
+                    write_frame_helper(FrameType::Method, channel, buf, |buf| {
+                        write_method_header(buf, MethodCode::ChannelClose)?;
+                        buf.write_u16::<BigEndian>(reply_code as u16);
+                        write_short_string(buf, &reply_text)?;
+                        if let Some((class_id, method_id)) = method.as_ref().map(MethodCode::to_codes) {
+                            buf.write_u16::<BigEndian>(class_id);
+                            buf.write_u16::<BigEndian>(method_id);
+                        } else {
+                            buf.write_u16::<BigEndian>(0);
+                            buf.write_u16::<BigEndian>(0);
+                        }
+                        Ok(())
+                    })
+                }
+                Method::ChannelCloseOk => {
+                    write_frame_helper(FrameType::Method, channel, buf, |buf| {
+                        write_method_header(buf, MethodCode::ChannelCloseOk)?;
+                        Ok(())
+                    })
+                }
                 Method::BasicPublish{reserved_1, exchange, routing_key, mandatory, immediate} => {
                     write_frame_helper(FrameType::Method, channel, buf, |buf| {
                         write_method_header(buf, MethodCode::BasicPublish)?;
