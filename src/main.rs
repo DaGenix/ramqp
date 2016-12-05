@@ -152,6 +152,24 @@ fn spawn_frame_receiver(
     Ok(())
 }
 
+fn spawn_frame_sender(
+        handle: &Handle,
+        mpsc_receiver: futures::sync::mpsc::Receiver<Frame>,
+        frame_sink: futures::stream::SplitSink<tokio_core::io::Framed<tokio_core::net::TcpStream, RmqCodec>>) {
+    let stream = mpsc_receiver.fold(frame_sink, |frame_sink, frame| {
+        frame_sink
+            .send(frame)
+            .map_err(|err| {
+                // Yikes! We couldn't send the frame for
+                // some reason. Time to tear down the Connection.
+                // TODO - save the error
+                ()
+            })
+    }).then(|_| Ok(()));
+
+    handle.spawn(stream);
+}
+
 impl Connection {
     pub fn open<'a, A, S1, S2, S3>(
             handle: &Handle,
@@ -232,28 +250,27 @@ impl Connection {
                     }
                 })
                 .and_then(move |(tune_params, framed)| {
-                    let (sink, stream) = framed.split();
+                    let (frame_sink, frame_stream) = framed.split();
 
-                    let (sender, receiver) = futures::sync::mpsc::channel(0);
-
-                    let receiver_stream = receiver.fold(sink, |sink, frame| {
-                        sink.send(frame).map_err(|x| panic!())
-                    }).map(|x| ());
-
-                    handle_for_later.spawn(receiver_stream);
+                    let (mpsc_sender, mpsc_receiver) = futures::sync::mpsc::channel(0);
 
                     let state = Rc::new(RefCell::new(ConnectionState {
-                        sender: sender,
+                        sender: mpsc_sender,
                         next_channel: 1,
                         channels: HashMap::new(),
                     }));
+
+                    spawn_frame_sender(
+                        &handle_for_later,
+                        mpsc_receiver,
+                        frame_sink);
 
                     spawn_frame_receiver(
                         &handle_for_later,
                         state.clone(),
                         tune_params.frame_max,
                         tune_params.heartbeat,
-                        stream)?;
+                        frame_stream)?;
 
                     Ok(Connection {
                         state: state,
