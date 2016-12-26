@@ -1,8 +1,7 @@
 use std::io;
-use std::mem;
 use std::time::Duration;
 
-use futures::{Async, Future, Poll};
+use futures::{Async, Poll};
 use futures::stream::Stream;
 use tokio_core::reactor::{Handle, Interval};
 

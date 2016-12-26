@@ -26,8 +26,10 @@ use std::sync::{Arc, Mutex};
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::time::Duration;
+use std::error::Error;
 
-use futures::{Future, Stream, Sink, future, stream};
+use futures::{Future, Stream, Sink, Poll, future, stream};
+use futures::future::{IntoFuture, Either};
 
 use tokio_core::reactor::{Core, Handle, Timeout};
 use tokio_core::net::TcpStream;
@@ -98,6 +100,48 @@ pub struct Connection {
     tune_params: TuneParams,
 }
 
+enum RecvError {
+    SendError(futures::sync::mpsc::SendError<Frame>),
+    IoError(io::Error),
+    Other,
+}
+
+impl RecvError {
+    fn description(&self) -> &str {
+        match *self {
+            RecvError::SendError(ref err) => err.description(),
+            RecvError::IoError(ref err) => err.description(),
+            RecvError::Other => "OTHER ERROR",
+        }
+    }
+}
+
+enum FrameReceiverResult<T1, T2> {
+    Next(T1),
+    Send(T2),
+}
+
+impl<I, T1, T2> Future for FrameReceiverResult<T1, T2>
+    where T1: Future<Item=I, Error=()>,
+          T2: Future<Item=I, Error=futures::sync::mpsc::SendError<Frame>>
+{
+    type Item = I;
+    type Error = RecvError;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match *self {
+            FrameReceiverResult::Next(ref mut a) => match a.poll() {
+                Ok(x) => Ok(x),
+                Err(_) => Err(RecvError::Other),
+            },
+            FrameReceiverResult::Send(ref mut b) => match b.poll() {
+                Ok(x) => Ok(x),
+                Err(err) => Err(RecvError::SendError(err)),
+            },
+        }
+    }
+}
+
 fn spawn_frame_receiver(
         handle: &Handle,
         connection_state: Rc<RefCell<ConnectionState> >,
@@ -105,49 +149,47 @@ fn spawn_frame_receiver(
         heartbeat: u16,
         stream: stream::SplitStream<tokio_core::io::Framed<tokio_core::net::TcpStream, RmqCodec> >)
             -> io::Result<()> {
-    fn sender_box<F>(f: F) -> Box<Future<Item=futures::sync::mpsc::Sender<Frame>, Error=()> >
-            where F: futures::IntoFuture<Item=futures::sync::mpsc::Sender<Frame>, Error=()>,
-                  F::Future: 'static {
-        Box::new(f.into_future())
-    }
-
     let sender = connection_state.borrow().sender.clone();
     let stream = sloppy_timeout_stream::SloppyTimeoutStream::new(
         stream,
         Duration::from_secs((2 * heartbeat) as u64),
         handle)?;
-    let s = stream.map_err(|err| panic!(format!("ERR: {}", err))).fold(sender, move |sender, frame| {
-        println!("Got frame: {:?}", &frame);
-        match frame {
-            Frame::Method(channel, Method::ChannelOpenOk{..}) => {
-                let mut connection_state = connection_state.borrow_mut();
-                match connection_state.channels.entry(channel){
-                    Entry::Occupied(mut entry) => {
-                        match entry.get_mut().take() {
-                            Some(ChannelState::Opening(result)) => {
-                                result.complete(Channel {
-                                    sender: Some(sender.clone()),
-                                    channel: channel,
-                                    frame_max: frame_max,
-                                });
-                                entry.insert(Some(ChannelState::Opened {
-                                    consumer_state: ConsumerState::NoConsumer,
-                                }));
-                                sender_box(Ok(sender))
-                            },
-                            Some(ChannelState::Opened{..}) | Some(ChannelState::Closing) => panic!(),
-                            None => panic!()
-                        }
-                    },
-                    Entry::Vacant(_) => panic!()
-                }
-            },
-            Frame::Heartbeat => {
-                sender_box(sender.send(Frame::Heartbeat).map_err(|_| panic!()))
-            },
-            _ => panic!("Unexpected frame"),
-        }
-    }).map(|_| ());
+    let s = stream
+        .map_err(|err| RecvError::IoError(err))
+        .fold(sender, move |sender, frame| {
+            println!("Got frame: {:?}", &frame);
+            match frame {
+                Frame::Method(channel, Method::ChannelOpenOk{..}) => {
+                    let mut connection_state = connection_state.borrow_mut();
+                    match connection_state.channels.entry(channel){
+                        Entry::Occupied(mut entry) => {
+                            match entry.get_mut().take() {
+                                Some(ChannelState::Opening(result)) => {
+                                    result.complete(Channel {
+                                        sender: Some(sender.clone()),
+                                        channel: channel,
+                                        frame_max: frame_max,
+                                    });
+                                    entry.insert(Some(ChannelState::Opened {
+                                        consumer_state: ConsumerState::NoConsumer,
+                                    }));
+                                    FrameReceiverResult::Next(Ok(sender).into_future())
+                                },
+                                Some(ChannelState::Opened{..}) | Some(ChannelState::Closing) => panic!(),
+                                None => panic!(),
+                            }
+                        },
+                        Entry::Vacant(_) => panic!()
+                    }
+                },
+                Frame::Heartbeat => {
+                    FrameReceiverResult::Send(sender.send(Frame::Heartbeat))
+                },
+                _ => panic!("Unexpected frame"),
+            }
+        })
+        .map(|_| ())
+        .map_err(|err| println!("ERR: {}", err.description()));
     handle.spawn(s);
     Ok(())
 }

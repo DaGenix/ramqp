@@ -12,7 +12,7 @@ impl<S: Stream> Future for NextItem<S> {
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match self.stream.poll() {
             Ok(r) => Ok(r),
-            Err((item, stream)) => Err(item),
+            Err((item, _)) => Err(item),
         }
     }
 }
